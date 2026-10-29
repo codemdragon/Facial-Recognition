@@ -54,6 +54,25 @@ if BASE_DIR not in _sys.path:
 from vector_db import FaceIndex, resolve  # noqa: E402  (needs path above)
 
 
+# ── Model & Detector descriptions ────────────────────────────────────────────
+
+MODEL_NOTES = {
+    "ArcFace": "★ Best Accuracy: Angular margin loss. Top performer for occluded faces (glasses/hats/masks), extreme angles & dim lighting.",
+    "Facenet512": "High Precision: 512-D vector space. Robust feature separation, strong balance of speed and matching accuracy.",
+    "GhostFaceNet": "Fast & Lightweight: GhostNet backbone optimized for high throughput on standard CPUs or mobile hardware.",
+    "Facenet": "Standard Baseline: 128-D embedding (Google). Fast inference, best for clear, well-lit frontal ID photos.",
+    "VGG-Face": "Deep Portrait: 2622-D representation. Highly detailed for studio portraits and frontal mugshots (heavier model).",
+    "SFace": "Surveillance Optimized: Lightweight cosine sphere model tailored for real-time camera streams.",
+}
+
+DETECTOR_NOTES = {
+    "retinaface": "★ Best Detection: Pixel-level Deep CNN. Detects tiny, turned, tilted, blurry, occluded faces or faces in low light.",
+    "mtcnn": "Landmark Alignment: Multi-task cascaded network with 5-point alignment. Solid for frontal & 45° portraits.",
+    "opencv": "Ultra Fast: Haar Cascade CPU detection. Fastest build time, but struggles with turned heads or occlusions.",
+    "dlib": "Classic HOG: Fast and reliable on un-occluded, upright frontal faces.",
+}
+
+
 # ── Worker threads ────────────────────────────────────────────────────────────
 
 class BuildWorker(QThread):
@@ -346,6 +365,8 @@ class MainWindow(QMainWindow):
         idx = self._cmb_strategy.findText(saved_strategy)
         if idx >= 0:
             self._cmb_strategy.setCurrentIndex(idx)
+        self._sync_model_desc()
+        self._sync_detector_desc()
         self._update_topn_label()
         self._update_score_label()
 
@@ -657,12 +678,40 @@ class MainWindow(QMainWindow):
             return r
 
         self._cmb_model = QComboBox()
-        self._cmb_model.addItems(["Facenet", "GhostFaceNet", "VGG-Face", "Facenet512", "ArcFace", "SFace"])
+        self._cmb_model.addItems(["ArcFace", "Facenet512", "GhostFaceNet", "Facenet", "VGG-Face", "SFace"])
+        for i in range(self._cmb_model.count()):
+            m = self._cmb_model.itemText(i)
+            if m in MODEL_NOTES:
+                self._cmb_model.setItemData(i, MODEL_NOTES[m], Qt.ToolTipRole)
         gil.addLayout(_irow("Model", self._cmb_model))
 
+        self._lbl_model_desc = QLabel()
+        self._lbl_model_desc.setWordWrap(True)
+        self._lbl_model_desc.setStyleSheet(
+            "color: #8cb8e6; font-size: 7.5pt; margin-left: 88px; margin-bottom: 4px;"
+        )
+        gil.addWidget(self._lbl_model_desc)
+
+        self._cmb_model.currentIndexChanged.connect(self._sync_model_desc)
+        self._sync_model_desc()
+
         self._cmb_detector = QComboBox()
-        self._cmb_detector.addItems(["opencv", "mtcnn", "retinaface", "dlib"])
+        self._cmb_detector.addItems(["retinaface", "mtcnn", "opencv", "dlib"])
+        for i in range(self._cmb_detector.count()):
+            d = self._cmb_detector.itemText(i)
+            if d in DETECTOR_NOTES:
+                self._cmb_detector.setItemData(i, DETECTOR_NOTES[d], Qt.ToolTipRole)
         gil.addLayout(_irow("Detector", self._cmb_detector))
+
+        self._lbl_detector_desc = QLabel()
+        self._lbl_detector_desc.setWordWrap(True)
+        self._lbl_detector_desc.setStyleSheet(
+            "color: #8cb8e6; font-size: 7.5pt; margin-left: 88px; margin-bottom: 4px;"
+        )
+        gil.addWidget(self._lbl_detector_desc)
+
+        self._cmb_detector.currentIndexChanged.connect(self._sync_detector_desc)
+        self._sync_detector_desc()
 
         self._spn_clusters = QSpinBox()
         self._spn_clusters.setRange(1, 256)
@@ -782,6 +831,16 @@ class MainWindow(QMainWindow):
         return panel
 
     # ──────────────────────────────────────────────────── Event handlers ──────
+
+    def _sync_model_desc(self):
+        if hasattr(self, "_cmb_model") and hasattr(self, "_lbl_model_desc"):
+            m = self._cmb_model.currentText()
+            self._lbl_model_desc.setText(MODEL_NOTES.get(m, ""))
+
+    def _sync_detector_desc(self):
+        if hasattr(self, "_cmb_detector") and hasattr(self, "_lbl_detector_desc"):
+            d = self._cmb_detector.currentText()
+            self._lbl_detector_desc.setText(DETECTOR_NOTES.get(d, ""))
 
     def _update_topn_label(self):
         self._lbl_topn.setText(str(self._sld_topn.value()))
