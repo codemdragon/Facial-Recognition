@@ -6,6 +6,8 @@ import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import cv2
 import faiss
 import numpy as np
@@ -262,7 +264,8 @@ def embed_many(abs_paths, relpaths, model, detector, workers, progress=None, bas
                     align=True, grayscale=False, expand_percentage=0, max_faces=1,
                 )
                 face = np.asarray(res[0]["face"], dtype=np.float32) if res else None
-            except Exception:
+            except Exception as exc:
+                logger.warning("Face extraction failed for %s: %s", rel, exc)
                 face = None
             return rel, face
 
@@ -282,10 +285,12 @@ def embed_many(abs_paths, relpaths, model, detector, workers, progress=None, bas
                 img_path=abs_paths[rel], detector_backend=detector, enforce_detection=False,
                 align=True, grayscale=False, expand_percentage=0, max_faces=1,
             )
-            if res:
-                faces[rel] = np.asarray(res[0]["face"], dtype=np.float32)
-        except Exception:  # noqa: BLE001
-            pass
+            if res and res[0].get("face") is not None:
+                face = np.asarray(res[0]["face"], dtype=np.float32)
+                if face.ndim == 3 and face.shape[-1] == 3:
+                    faces[rel] = face
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Face extraction failed for %s: %s", rel, exc)
         if progress:
             progress(done_count(), total, rel, rel in faces)
     return _batched_embed(faces, relpaths, model, progress, total)

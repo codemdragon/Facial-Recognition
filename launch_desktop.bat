@@ -15,6 +15,10 @@ if not exist "%VENV_PY%" (
     exit /b 1
 )
 
+REM ── Configure environment ──────────────────────────────────────────────────
+set TF_USE_LEGACY_KERAS=1
+set TF_ENABLE_ONEDNN_OPTS=0
+
 REM ── Always launch from face_app\ so local imports resolve ────────────────────
 cd /d "%FACE_APP%"
 "%VENV_PY%" main_app.py %*

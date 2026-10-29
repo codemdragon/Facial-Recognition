@@ -2,12 +2,13 @@
   "folders": [
     "E:/Python Projects/facial Recog/test_sample"
   ],
-  "model": "Facenet",
-  "detector": "dlib",
-  "clusters": 8,
+  "model": "ArcFace",
+  "detector": "retinaface",
+  "clusters": 16,
   "workers": 4,
-  "top_n": 27,
+  "top_n": 15,
   "min_score": 30,
   "device": "auto",
-  "mode": "all"
+  "mode": "all",
+  "search_strategy": "Fused (Best)"
 }

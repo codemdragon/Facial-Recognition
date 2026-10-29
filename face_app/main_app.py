@@ -4,6 +4,9 @@ CPLC Face Search - PyQt5 desktop application entry point.
 import sys
 import os
 
+# Set legacy keras before any TF / DeepFace imports to support retinaface/keras
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 # Ensure face_app/ is on sys.path regardless of launch directory
 _FACE_APP_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = _FACE_APP_DIR

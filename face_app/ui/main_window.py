@@ -370,6 +370,28 @@ class MainWindow(QMainWindow):
         self._sync_detector_desc()
         self._update_topn_label()
         self._update_score_label()
+        self._try_load_existing_index()
+
+    def _try_load_existing_index(self):
+        folders = self._folder_list.get_folders()
+        if not folders:
+            return
+        db_root_str = "; ".join(folders)
+        try:
+            idx = FaceIndex.load(
+                db_root_str,
+                model=self._cmb_model.currentText(),
+                detector=self._cmb_detector.currentText(),
+                num_clusters=self._spn_clusters.value(),
+            )
+            if idx is not None:
+                self._index = idx
+                self._dot.setStyleSheet("color: #22c55e; font-size: 10pt; padding: 0 8px;")
+                self._lbl_build_status.setStyleSheet("font-size: 8pt; color: #22c55e;")
+                self._lbl_build_status.setText(f"Index loaded · {len(idx.relpaths)} faces")
+                self._status_lbl.setText(f"Index ready: {len(idx.relpaths)} images")
+        except Exception:
+            pass
 
     # ────────────────────────────────────────────────────────── Build UI ──────
 
@@ -747,7 +769,7 @@ class MainWindow(QMainWindow):
 
         self._spn_clusters = QSpinBox()
         self._spn_clusters.setRange(1, 256)
-        self._spn_clusters.setValue(8)
+        self._spn_clusters.setValue(16)
         gil.addLayout(_irow("Clusters", self._spn_clusters))
 
         self._spn_workers = QSpinBox()
