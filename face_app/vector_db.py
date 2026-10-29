@@ -6,6 +6,7 @@ import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import cv2
 import faiss
 import numpy as np
 
@@ -28,12 +29,14 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 MODELS = ["Facenet", "GhostFaceNet", "VGG-Face", "Facenet512", "ArcFace", "SFace", "OpenFace", "DeepFace"]
 DETECTORS = ["opencv", "mtcnn", "retinaface", "dlib"]
 
-CACHE_VERSION = "v3"
+CACHE_VERSION = "v4_dual"
 DETECT_BATCH = 24            # files sent to each extraction worker task
 EMBED_CHUNK = 384            # aligned faces per batched GPU forward
 RETRAIN_NEW_MIN = 1024       # re-cluster from scratch when this many new vectors
 RETRAIN_NEW_RATIO = 0.10     # ... or when new vectors exceed this share of the DB
 CLUSTER_TRAIN_MAX = 250_000  # k-means trains on at most this many vectors
+
+SEARCH_MODES = ["auto", "full", "upper_periocular", "fused"]
 
 
 def is_image(path: str) -> bool:
@@ -138,23 +141,81 @@ def file_stamp(path: str) -> str:
     return f"{st.st_mtime_ns}:{st.st_size}"
 
 
-def embed(path: str, model: str, detector: str):
-    """Single-image embedding (used at search time)."""
-    result = DeepFace.represent(
-        img_path=path,
-        model_name=model,
-        detector_backend=detector,
-        enforce_detection=False,
-        align=True,
-        normalization="base",
-    )
-    if not result:
+def _get_upper_face(face_arr):
+    """Crop upper 65% of an aligned face image (eyebrows/eyes/forehead/nose-bridge)
+    and resize back to canonical input dimensions (e.g. 112x112)."""
+    if face_arr is None or face_arr.ndim != 3:
         return None
-    emb = np.asarray(result[0]["embedding"], dtype=np.float32)
-    norm = np.linalg.norm(emb)
-    if norm == 0:
-        return None
-    return emb / norm
+    h, w = face_arr.shape[:2]
+    upper_h = max(10, int(h * 0.65))
+    cropped = face_arr[:upper_h, :]
+    return cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
+
+
+def embed(path: str, model: str, detector: str, return_upper: bool = False):
+    """Single-image embedding (used at search time).
+    Returns normalized full embedding, or (full_emb, upper_emb) if return_upper=True.
+    """
+    try:
+        faces = _extract_faces(
+            img_path=path,
+            detector_backend=detector,
+            enforce_detection=False,
+            align=True,
+            grayscale=False,
+            expand_percentage=0,
+            max_faces=1,
+        )
+    except Exception as exc:
+        logger.warning("Face extraction failed for %s: %s", path, exc)
+        return (None, None) if return_upper else None
+
+    if not faces:
+        return (None, None) if return_upper else None
+
+    face_raw = np.asarray(faces[0]["face"], dtype=np.float32)
+    if face_raw.ndim != 3 or face_raw.shape[-1] != 3:
+        return (None, None) if return_upper else None
+
+    # DeepFace expects BGR input for img_path arrays
+    bgr_full = face_raw[:, :, ::-1]
+    upper_face = _get_upper_face(face_raw)
+    bgr_upper = upper_face[:, :, ::-1] if upper_face is not None else bgr_full
+
+    targets = [bgr_full]
+    if return_upper:
+        targets.append(bgr_upper)
+
+    try:
+        outs = DeepFace.represent(
+            img_path=targets,
+            model_name=model,
+            detector_backend="skip",
+            enforce_detection=False,
+            align=True,
+            normalization="base",
+        )
+    except Exception as exc:
+        logger.warning("DeepFace represent failed for %s: %s", path, exc)
+        return (None, None) if return_upper else None
+
+    if not outs:
+        return (None, None) if return_upper else None
+
+    def _norm_vec(item):
+        if isinstance(item, list):
+            item = item[0] if item else None
+        if not item or "embedding" not in item:
+            return None
+        v = np.asarray(item["embedding"], dtype=np.float32)
+        n = np.linalg.norm(v)
+        return (v / n) if n > 0 else None
+
+    emb_full = _norm_vec(outs[0])
+    if return_upper:
+        emb_upper = _norm_vec(outs[1]) if len(outs) > 1 else emb_full
+        return emb_full, emb_upper
+    return emb_full
 
 
 def _extract_face_worker(chunk_paths, detector):
@@ -233,25 +294,49 @@ def embed_many(abs_paths, relpaths, model, detector, workers, progress=None, bas
 def _batched_embed(faces, relpaths, model, progress, total):
     ordered = [r for r in relpaths if r in faces]
     if not ordered:
-        return {}
-    embeddings = {}
+        return {}, {}
+    embeddings_full = {}
+    embeddings_upper = {}
+
     for chunk in _slices(ordered, EMBED_CHUNK):
+        # Prepare both full face and upper face crops for the chunk
+        full_imgs = [faces[r][:, :, ::-1] for r in chunk]
+        upper_imgs = [_get_upper_face(faces[r])[:, :, ::-1] for r in chunk]
+
+        # Combine in single forward pass: [full_0, ..., full_n, upper_0, ..., upper_n]
+        combined = full_imgs + upper_imgs
         outs = DeepFace.represent(
-            img_path=[faces[r][:, :, ::-1] for r in chunk], model_name=model, enforce_detection=False,
+            img_path=combined, model_name=model, enforce_detection=False,
             detector_backend="skip", align=True, normalization="base",
         )
-        for rel, out in zip(chunk, outs):
-            if isinstance(out, dict):
-                out = [out]
-            if not out:
-                continue
-            emb = np.asarray(out[0]["embedding"], dtype=np.float32)
-            norm = np.linalg.norm(emb)
-            if norm > 0:
-                embeddings[rel] = emb / norm
+        if not outs:
+            continue
+
+        n_chunk = len(chunk)
+        outs_full = outs[:n_chunk]
+        outs_upper = outs[n_chunk:]
+
+        for rel, out_f, out_u in zip(chunk, outs_full, outs_upper):
+            if isinstance(out_f, dict):
+                out_f = [out_f]
+            if isinstance(out_u, dict):
+                out_u = [out_u]
+
+            if out_f and "embedding" in out_f[0]:
+                emb = np.asarray(out_f[0]["embedding"], dtype=np.float32)
+                norm = np.linalg.norm(emb)
+                if norm > 0:
+                    embeddings_full[rel] = emb / norm
+
+            if out_u and "embedding" in out_u[0]:
+                emb = np.asarray(out_u[0]["embedding"], dtype=np.float32)
+                norm = np.linalg.norm(emb)
+                if norm > 0:
+                    embeddings_upper[rel] = emb / norm
+
         if progress:
-            progress(total, total, chunk[-1], len(embeddings) > 0)
-    return embeddings
+            progress(total, total, chunk[-1], len(embeddings_full) > 0)
+    return embeddings_full, embeddings_upper
 
 
 def _cluster(vectors, k):
@@ -300,8 +385,10 @@ def meta_path(db_root, model: str, detector: str, k: int) -> str:
 
 class FaceIndex:
     def __init__(self, vectors, relpaths, labels, centroids, stamps,
-                 model, detector, num_clusters, db_root, build_stats=None):
+                 model, detector, num_clusters, db_root, build_stats=None,
+                 upper_vectors=None):
         self.vectors = vectors
+        self.upper_vectors = upper_vectors if upper_vectors is not None else vectors
         self.relpaths = relpaths
         self.labels = labels
         self.centroids = centroids
@@ -370,36 +457,41 @@ class FaceIndex:
             "reclustered": True,
         }
 
-        new_emb = {}
+        new_emb_full = {}
+        new_emb_upper = {}
         if to_embed:
-            new_emb = embed_many(
+            new_emb_full, new_emb_upper = embed_many(
                 manifest, to_embed, model, detector, workers,
                 progress=progress, base_done=stats["kept"],
                 total=stats["kept"] + len(to_embed),
             )
-        stats["embedded"] = len(new_emb)
+        stats["embedded"] = len(new_emb_full)
 
         entries = []
         if existing is not None:
+            has_old_upper = hasattr(existing, "upper_vectors") and existing.upper_vectors is not None
             for rel, orow in keep:
-                entries.append((rel, existing.vectors[orow], existing.stamps[orow],
+                old_upper = existing.upper_vectors[orow] if has_old_upper else existing.vectors[orow]
+                entries.append((rel, existing.vectors[orow], old_upper, existing.stamps[orow],
                                 int(existing.labels[orow])))
         for rel in to_embed:
-            if rel in new_emb:
-                entries.append((rel, new_emb[rel], stamps_now[rel], None))
+            if rel in new_emb_full:
+                u_vec = new_emb_upper.get(rel, new_emb_full[rel])
+                entries.append((rel, new_emb_full[rel], u_vec, stamps_now[rel], None))
         if not entries:
             raise ValueError("No face embeddings could be extracted from the images.")
 
         entries.sort(key=lambda e: e[0])
         relpaths = [e[0] for e in entries]
         vectors = np.vstack([e[1] for e in entries]).astype("float32")
-        stamps = [e[2] for e in entries]
+        upper_vectors = np.vstack([e[2] for e in entries]).astype("float32")
+        stamps = [e[3] for e in entries]
 
         n, d = vectors.shape
         k = max(1, min(num_clusters, n))
         delta = len(to_embed)
-        old_flags = np.asarray([e[3] is not None for e in entries], dtype=bool)
-        old_labels_arr = np.asarray([e[3] if e[3] is not None else -1 for e in entries], dtype=np.int64)
+        old_flags = np.asarray([e[4] is not None for e in entries], dtype=bool)
+        old_labels_arr = np.asarray([e[4] if e[4] is not None else -1 for e in entries], dtype=np.int64)
 
         if existing is not None and not force and len(to_embed) and n > delta and \
                 delta <= RETRAIN_NEW_MIN and delta <= n * RETRAIN_NEW_RATIO:
@@ -415,7 +507,8 @@ class FaceIndex:
             centroids, labels = _cluster(vectors, k)
 
         index = cls(vectors, relpaths, labels, centroids, stamps,
-                    model, detector, k, db_root_str, build_stats=stats)
+                    model, detector, k, db_root_str, build_stats=stats,
+                    upper_vectors=upper_vectors)
         index.save()
         return index
 
@@ -431,6 +524,7 @@ class FaceIndex:
             with np.load(npz, allow_pickle=True) as data:
                 relpaths = list(data["relpaths"])
                 vectors = data["vectors"]
+                upper_vectors = data["upper_vectors"] if "upper_vectors" in data else vectors
                 labels = data["labels"]
                 centroids = data["centroids"]
                 stamps = list(data["stamps"]) if "stamps" in data else None
@@ -441,12 +535,14 @@ class FaceIndex:
         meta = json.load(open(mp, encoding="utf-8"))
         saved_root = meta.get("db_roots") or meta.get("db_root") or key_target
         return cls(vectors, relpaths, labels, centroids, stamps,
-                   meta["model"], meta["detector"], meta["num_clusters"], saved_root)
+                   meta["model"], meta["detector"], meta["num_clusters"], saved_root,
+                   upper_vectors=upper_vectors)
 
     def save(self):
         npz = cache_path(self.db_root, self.model, self.detector, self.num_clusters)
         mp = meta_path(self.db_root, self.model, self.detector, self.num_clusters)
         np.savez_compressed(npz, vectors=self.vectors,
+                            upper_vectors=self.upper_vectors,
                             relpaths=np.asarray(self.relpaths, dtype=object),
                             labels=self.labels, centroids=self.centroids,
                             stamps=np.asarray(self.stamps, dtype=object))
@@ -489,17 +585,41 @@ class FaceIndex:
             "dim": int(self.vectors.shape[1]),
         }
 
-    def search(self, query_path, top_n=10):
-        vec = embed(query_path, self.model, self.detector)
-        if vec is None or vec.shape != (self.vectors.shape[1],):
+    def search(self, query_path, top_n=10, search_mode="fused"):
+        """Run similarity search with selectable search_mode:
+        - 'auto' / 'fused': Maximum of full-face and upper-face similarity.
+        - 'full': Standard full-face vector comparison.
+        - 'upper_periocular': Compares eye/forehead/brow regions, eliminating mouth/jaw occlusions.
+        """
+        full_vec, upper_vec = embed(query_path, self.model, self.detector, return_upper=True)
+        if full_vec is None:
             raise ValueError("Could not produce a face embedding for the query image.")
 
-        index = self._flat_index(self.vectors)
-        sims, idxs = index.search(vec.reshape(1, -1), min(top_n, len(self.relpaths)))
+        mode = (search_mode or "fused").lower()
+        n_items = len(self.relpaths)
+        fetch_k = min(top_n * 2, n_items)
+
+        scores = {}
+        # 1. Full-face similarity
+        if mode in ("full", "fused", "auto"):
+            idx_full = self._flat_index(self.vectors)
+            sims_f, idxs_f = idx_full.search(full_vec.reshape(1, -1), fetch_k)
+            for sim, i in zip(sims_f[0], idxs_f[0]):
+                if i >= 0:
+                    scores[i] = max(scores.get(i, -1.0), float(sim))
+
+        # 2. Upper-face similarity
+        if mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
+            idx_upper = self._flat_index(self.upper_vectors)
+            sims_u, idxs_u = idx_upper.search(upper_vec.reshape(1, -1), fetch_k)
+            for sim, i in zip(sims_u[0], idxs_u[0]):
+                if i >= 0:
+                    scores[i] = max(scores.get(i, -1.0), float(sim))
+
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
         results = []
-        for sim, idx in zip(sims[0], idxs[0]):
-            if idx < 0:
-                continue
+        for idx, sim in ranked:
             label = int(self.labels[idx])
             section = self.sections[label]["name"]
             results.append({
@@ -511,30 +631,50 @@ class FaceIndex:
             })
         return results
 
-    def section_matches(self, query_path, sections=None, top_n=10):
-        vec = embed(query_path, self.model, self.detector)
-        if vec is None or vec.shape != (self.vectors.shape[1],):
+    def section_matches(self, query_path, sections=None, top_n=10, search_mode="fused"):
+        full_vec, upper_vec = embed(query_path, self.model, self.detector, return_upper=True)
+        if full_vec is None:
             raise ValueError("Could not produce a face embedding for the query image.")
+
+        mode = (search_mode or "fused").lower()
         wanted = set(sections) if sections else set(self.sections.keys())
         per = []
+
         for label in wanted:
             ids = np.where(self.labels == label)[0]
             if len(ids) == 0:
                 continue
-            sub = np.asarray([self.vectors[i] for i in ids], dtype="float32")
-            sub_index = self._flat_index(sub)
-            sims, local = sub_index.search(vec.reshape(1, -1), min(top_n, len(ids)))
-            for sim, li in zip(sims[0], local[0]):
-                if li < 0:
-                    continue
-                global_idx = ids[li]
+
+            sub_scores = {}
+            fetch_k = min(top_n, len(ids))
+
+            if mode in ("full", "fused", "auto"):
+                sub_f = np.asarray([self.vectors[i] for i in ids], dtype="float32")
+                sub_idx_f = self._flat_index(sub_f)
+                sims_f, local_f = sub_idx_f.search(full_vec.reshape(1, -1), fetch_k)
+                for sim, li in zip(sims_f[0], local_f[0]):
+                    if li >= 0:
+                        gid = ids[li]
+                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), float(sim))
+
+            if mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
+                sub_u = np.asarray([self.upper_vectors[i] for i in ids], dtype="float32")
+                sub_idx_u = self._flat_index(sub_u)
+                sims_u, local_u = sub_idx_u.search(upper_vec.reshape(1, -1), fetch_k)
+                for sim, li in zip(sims_u[0], local_u[0]):
+                    if li >= 0:
+                        gid = ids[li]
+                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), float(sim))
+
+            for gid, sim in sub_scores.items():
                 per.append({
-                    "rel": self.relpaths[global_idx],
+                    "rel": self.relpaths[gid],
                     "similarity": float(sim),
                     "distance": float(1 - sim),
                     "section": self.sections[int(label)]["name"],
                     "section_id": int(label),
                 })
+
         per.sort(key=lambda r: r["similarity"], reverse=True)
         return per[:top_n]
 

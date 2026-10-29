@@ -90,19 +90,22 @@ class SearchWorker(QThread):
     finished = pyqtSignal(list)
     error    = pyqtSignal(str)
 
-    def __init__(self, index, query_path, top_n, mode):
+    def __init__(self, index, query_path, top_n, mode, search_mode="fused"):
         super().__init__()
         self.index = index
         self.query_path = query_path
         self.top_n = top_n
         self.mode = mode
+        self.search_mode = search_mode
 
     def run(self):
         try:
             if self.mode == "sections":
-                matches = self.index.section_matches(self.query_path, top_n=self.top_n)
+                matches = self.index.section_matches(self.query_path, top_n=self.top_n,
+                                                     search_mode=self.search_mode)
             else:
-                matches = self.index.search(self.query_path, top_n=self.top_n)
+                matches = self.index.search(self.query_path, top_n=self.top_n,
+                                            search_mode=self.search_mode)
             self.finished.emit(matches)
         except Exception as exc:
             self.error.emit(str(exc))
@@ -295,6 +298,7 @@ class MainWindow(QMainWindow):
             "min_score": 30.0,
             "device": "auto",
             "mode": "all",
+            "search_strategy": "Fused (Best)",
         }
         if os.path.exists(CONFIG_PATH):
             try:
@@ -314,6 +318,7 @@ class MainWindow(QMainWindow):
         self._config["min_score"] = self._sld_score.value()
         self._config["device"] = self._cmb_device.currentText()
         self._config["mode"] = "all" if self._chk_mode.isChecked() else "sections"
+        self._config["search_strategy"] = self._cmb_strategy.currentText()
         try:
             with open(CONFIG_PATH, "w", encoding="utf-8") as fh:
                 json.dump(self._config, fh, indent=2)
@@ -337,6 +342,10 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self._cmb_device.setCurrentIndex(idx)
         self._chk_mode.setChecked(cfg.get("mode", "all") == "all")
+        saved_strategy = cfg.get("search_strategy", "Fused (Best)")
+        idx = self._cmb_strategy.findText(saved_strategy)
+        if idx >= 0:
+            self._cmb_strategy.setCurrentIndex(idx)
         self._update_topn_label()
         self._update_score_label()
 
@@ -576,6 +585,28 @@ class MainWindow(QMainWindow):
         self._chk_mode.setStyleSheet("color: #dce6f5; font-size: 9pt;")
         row2.addWidget(self._chk_mode, 1)
         gsl.addLayout(row2)
+
+        # Search strategy (fused / full-face / periocular)
+        row3 = QHBoxLayout(); row3.setSpacing(8)
+        row3.addWidget(_row_lbl("Strategy"))
+        self._cmb_strategy = QComboBox()
+        self._cmb_strategy.addItems(["Fused (Best)", "Full Face", "Periocular (Upper)"])
+        self._cmb_strategy.setCurrentIndex(0)
+        self._cmb_strategy.setStyleSheet(
+            "QComboBox { background: #0d1e38; color: #dce6f5; border: 1px solid #1e3a5f;"
+            " border-radius: 4px; padding: 2px 6px; font-size: 9pt; }"
+            "QComboBox::drop-down { border: none; }"
+            "QComboBox QAbstractItemView { background: #0d1e38; color: #dce6f5;"
+            " selection-background-color: #1e3a5f; }"
+        )
+        self._cmb_strategy.setToolTip(
+            "Fused (Best): max of full-face and upper-face similarity — best for occluded faces\n"
+            "Full Face: standard full-face ArcFace embedding\n"
+            "Periocular (Upper): eyes/forehead only — ignores hands/masks over mouth"
+        )
+        self._cmb_strategy.currentIndexChanged.connect(self._save_config)
+        row3.addWidget(self._cmb_strategy, 1)
+        gsl.addLayout(row3)
 
         lay.addWidget(gb_settings)
 
@@ -905,8 +936,15 @@ class MainWindow(QMainWindow):
         mode = "all" if self._chk_mode.isChecked() else "sections"
         top_n = self._sld_topn.value()
 
+        _strategy_map = {
+            "Fused (Best)":       "fused",
+            "Full Face":          "full",
+            "Periocular (Upper)": "upper_periocular",
+        }
+        search_mode = _strategy_map.get(self._cmb_strategy.currentText(), "fused")
+
         self._search_worker = SearchWorker(
-            self._index, self._query_path, top_n, mode
+            self._index, self._query_path, top_n, mode, search_mode=search_mode
         )
         self._search_worker.finished.connect(self._on_search_done)
         self._search_worker.error.connect(self._on_search_error)

@@ -274,13 +274,14 @@ def api_search():
     top_n = min(int(request.form.get("top_n", 10)), 200)
     top_n = max(1, top_n)
     min_score = float(request.form.get("min_score", 0.0))
+    search_strategy = request.form.get("strategy", "fused")  # 'fused' | 'upper_periocular' | 'full'
 
     try:
         mode = request.form.get("mode", "all")  # 'all' | 'sections'
         if mode == "sections":
-            matches = index.section_matches(save_path, top_n=top_n)
+            matches = index.section_matches(save_path, top_n=top_n, search_mode=search_strategy)
         else:
-            matches = index.search(save_path, top_n=top_n)
+            matches = index.search(save_path, top_n=top_n, search_mode=search_strategy)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 422
 
