@@ -16,11 +16,11 @@ The foundational release for the CPLC Face Search system:
 - **Audit Logging**: PostgreSQL connection for persistent search history, index metadata, and multi-tenant operator records.
 
 ### Interface V1 — Claude UI Prototype (`Claude UI Test/`)
-A specialized investigative web dashboard prototype located in `Claude UI Test/files`:
-- **Interactive Multi-Panel Workspace**: Side navigation rail, collapsible search configuration drawer, and dataset multi-selector.
-- **Comprehensive Match Review Suite**: Side-by-side identity comparison, metadata occurrence cards, case notes, and review status flagging.
-- **Watchlists & Sources**: Watchlist builder and source management wizard.
-- **Pure Client-Side Architecture**: Built with lightweight zero-dependency HTML, CSS, and vanilla JS (`app.js`, `data.js`, `styles.css`) for rapid UI iteration and design verification.
+> [!NOTE]
+> This prototype is kept **strictly separate and unlinked** from the core production PyQt5 desktop application and Flask backend. It serves as an isolated concept sandbox for future UI exploration.
+- **Location**: Completely self-contained under `Claude UI Test/files/`
+- **Architecture**: Zero-dependency vanilla HTML/CSS/JavaScript (`app.js`, `data.js`, `styles.css`, `index.html`) using synthetic mock data.
+- **Purpose**: A reference sandbox for future frontend/web workstation designs (side navigation rail, side-by-side match review, multi-dataset selector, and watchlists). It does not import or affect the PyQt5 desktop code or vector search pipeline.
 
 ---
 
