@@ -1,0 +1,33 @@
+﻿# Virtual Environments
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.class
+*.npz
+
+# Uploaded / Cache
+uploads/
+_thumb_cache/
+face_app/uploads/
+face_app/sample_db/
+
+# Large zips and datasets
+Found 1/
+Found 2/
+*.zip
+
+# Test samples & raw query dumps
+test_sample/
+*.jpeg
+*.jpg
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+pip_log.txt

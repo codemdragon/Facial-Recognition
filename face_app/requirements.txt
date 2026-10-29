@@ -1,0 +1,21 @@
+# CPLC Face Search — Python dependencies
+# Install: pip install -r requirements.txt
+
+# ── Core face recognition ──────────────────────────────────────────
+# DeepFace is installed as editable from the cloned repo:
+#   pip install -e ../deepface
+tensorflow-cpu>=2.16
+tf-keras>=2.16
+opencv-python==4.10.0.84
+faiss-cpu>=1.9
+
+# ── Web backend (kept for Docker/server mode) ─────────────────────
+Flask>=3.0
+Pillow>=10.0
+
+# ── Desktop GUI ───────────────────────────────────────────────────
+PyQt5>=5.15
+PyQt5-sip>=12.13
+
+# ── Database ──────────────────────────────────────────────────────
+psycopg2-binary>=2.9      # PostgreSQL adapter (binary = no build deps)

@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPLC Face Search</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app" id="app">
+
+  <!-- ===================== HEADER ===================== -->
+  <header class="header">
+    <div class="header__brand">
+      <div class="header__mark">CP</div>
+      <div>
+        <div class="header__title">CPLC Face Search</div>
+        <div class="header__subtitle">Investigation workspace</div>
+      </div>
+    </div>
+    <div class="header__crumb" id="crumb">Search</div>
+    <div class="header__spacer"></div>
+
+    <div class="header__status" title="This connection indicator is simulated for the prototype">
+      <span class="dot"></span> Backend: simulated
+    </div>
+
+    <select class="header__role-select" id="roleSelect" title="Demo role switch — visual only, not real access control">
+      <option value="Normal User">View as: Normal User</option>
+      <option value="Power User">View as: Power User</option>
+      <option value="Admin" selected>View as: Admin</option>
+    </select>
+
+    <div class="header__user">
+      <div class="avatar">AF</div>
+      <div class="header__user-meta">
+        <div class="header__user-name">M. Codem</div>
+        <div class="header__user-role" id="headerUserRole">Admin</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===================== NAV RAIL ===================== -->
+  <nav class="rail" id="rail">
+    <button class="rail__toggle" id="railToggle" title="Expand navigation">
+      <span class="nav-item__icon">☰</span><span class="nav-item__label">Collapse</span>
+    </button>
+
+    <button class="nav-item active" data-page="search" data-roles="Normal User,Power User,Admin">
+      <span class="nav-item__icon">⌕</span><span class="nav-item__label">Search</span>
+    </button>
+    <button class="nav-item" data-page="datasets" data-roles="Power User,Admin">
+      <span class="nav-item__icon">▤</span><span class="nav-item__label">Datasets &amp; Sources</span>
+    </button>
+    <button class="nav-item" data-page="review" data-roles="Normal User,Power User,Admin">
+      <span class="nav-item__icon">◧</span><span class="nav-item__label">Match Review</span>
+    </button>
+    <button class="nav-item" data-page="watchlists" data-roles="Normal User,Power User,Admin">
+      <span class="nav-item__icon">☆</span><span class="nav-item__label">Watchlists</span>
+    </button>
+    <button class="nav-item" data-page="history" data-roles="Normal User,Power User,Admin">
+      <span class="nav-item__icon">↺</span><span class="nav-item__label">Search History</span>
+    </button>
+    <button class="nav-item" data-page="import" data-roles="Power User,Admin">
+      <span class="nav-item__icon">⇵</span><span class="nav-item__label">Import Centre</span>
+    </button>
+
+    <div class="rail__section-label">System</div>
+    <button class="nav-item" data-page="index" data-roles="Admin">
+      <span class="nav-item__icon">◎</span><span class="nav-item__label">Index Management</span>
+    </button>
+    <button class="nav-item" data-page="admin" data-roles="Admin">
+      <span class="nav-item__icon">⚙</span><span class="nav-item__label">Administration</span>
+    </button>
+
+    <div class="rail__spacer"></div>
+  </nav>
+
+  <!-- ===================== MAIN ===================== -->
+  <main class="main" id="main">
+
+    <!-- ---------- SEARCH PAGE ---------- -->
+    <section class="page active" id="page-search">
+      <div class="page-split" id="searchSplit">
+        <div class="page-split__left" id="searchLeft">
+          <button class="panel-collapse-btn" id="searchLeftCollapse" title="Collapse panel">‹</button>
+          <div class="left-section">
+            <div class="page-title">Search configuration</div>
+            <div class="page-subtitle">Select datasets, provide a query image and run a similarity search.</div>
+          </div>
+
+          <div class="left-section">
+            <div class="section-title">Datasets</div>
+            <div id="datasetChecklist"></div>
+            <div class="toggle-row" style="margin-top:10px;">
+              <label for="searchAllToggle" class="text-small">Search all permitted datasets</label>
+              <label class="switch"><input type="checkbox" id="searchAllToggle"><span class="switch__track"></span></label>
+            </div>
+          </div>
+
+          <div class="left-section">
+            <div class="section-title">Query image</div>
+            <div class="dropzone" id="dropzone">
+              <div class="dropzone__icon">⇧</div>
+              <div>Drop query image here</div>
+              <div class="text-small text-secondary">JPG, PNG or supported image format</div>
+              <button class="btn btn-sm" id="browseBtn" type="button">Browse files</button>
+              <input type="file" id="fileInput" accept="image/*" hidden>
+            </div>
+            <div id="previewArea" style="display:none;margin-top:10px;" class="preview-card">
+              <img id="previewImg" alt="Query image preview">
+              <div class="preview-card__meta">
+                <div class="preview-card__name" id="previewName">—</div>
+                <div class="preview-card__dims" id="previewDims">—</div>
+              </div>
+              <div class="preview-card__actions">
+                <button class="btn btn-sm btn-ghost" id="replaceBtn" type="button">Replace</button>
+                <button class="btn btn-sm btn-ghost" id="removeBtn" type="button">Remove</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="left-section">
+            <div class="section-title">Search options</div>
+            <div class="field">
+              <label class="field__label">Maximum results</label>
+              <select class="select" id="maxResults">
+                <option value="25">25 results</option>
+                <option value="50" selected>50 results</option>
+                <option value="100">100 results</option>
+                <option value="all">All qualifying results</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field__label">Minimum similarity</label>
+              <div class="slider-row">
+                <input type="range" id="simSlider" min="0" max="100" value="70">
+                <span class="slider-value" id="simValue">70%</span>
+              </div>
+              <div class="slider-scale"><span>0%</span><span>50%</span><span>100%</span></div>
+              <div class="field__hint">Similarity is a ranking score, not a probability of identity.</div>
+            </div>
+          </div>
+
+          <div class="left-section" style="padding-bottom:16px;">
+            <div class="panel text-small" style="margin-bottom:12px;">
+              <div class="kv"><dt>Active model</dt><dd>ArcFace (DeepFace)</dd></div>
+              <div class="kv"><dt>Index status</dt><dd><span class="badge ok">Healthy</span></dd></div>
+            </div>
+            <button class="btn btn-primary btn-block" id="runSearchBtn" disabled>Run search</button>
+            <button class="btn btn-ghost btn-block" id="resetSearchBtn" style="margin-top:8px;">Reset controls</button>
+            <div class="simulated-note">Prototype only — these controls are interactive, but no recognition engine is connected.</div>
+          </div>
+        </div>
+
+        <div class="page-split__divider" id="searchDivider"></div>
+
+        <div class="page-split__right" id="searchResults">
+          <!-- rendered by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- MATCH REVIEW PAGE ---------- -->
+    <section class="page" id="page-review">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="reviewContent">
+          <!-- rendered by app.js -->
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- DATASETS & SOURCES PAGE ---------- -->
+    <section class="page" id="page-datasets">
+      <div class="page-split" id="datasetsSplit">
+        <div class="page-split__left">
+          <div class="left-section">
+            <div class="page-title">Datasets &amp; Sources</div>
+            <div class="page-subtitle">Configure where images come from and monitor source health.</div>
+          </div>
+          <div class="left-section">
+            <div class="section-title">Filter by status</div>
+            <label class="checkbox-row"><input type="checkbox" class="dsStatusFilter" value="Healthy" checked> Healthy</label>
+            <label class="checkbox-row"><input type="checkbox" class="dsStatusFilter" value="Warning" checked> Warning</label>
+            <label class="checkbox-row"><input type="checkbox" class="dsStatusFilter" value="Index pending" checked> Index pending</label>
+            <label class="checkbox-row"><input type="checkbox" class="dsStatusFilter" value="Offline" checked> Offline</label>
+          </div>
+          <div class="left-section" style="padding-bottom:16px;">
+            <div class="section-title">Owner</div>
+            <select class="select" id="dsOwnerFilter">
+              <option value="">All owners</option>
+              <option value="u1">M. Codem</option>
+              <option value="u4">N. Siddiqui</option>
+            </select>
+            <button class="btn btn-primary btn-block" style="margin-top:16px;" id="newDatasetBtn">New dataset</button>
+          </div>
+        </div>
+        <div class="page-split__divider"></div>
+        <div class="page-split__right" id="datasetsTableArea"></div>
+      </div>
+    </section>
+
+    <!-- ---------- CREATE DATASET WIZARD (full width) ---------- -->
+    <section class="page" id="page-wizard">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="wizardArea"></div>
+      </div>
+    </section>
+
+    <!-- ---------- WATCHLISTS PAGE ---------- -->
+    <section class="page" id="page-watchlists">
+      <div class="page-split" id="watchlistsSplit">
+        <div class="page-split__left">
+          <div class="left-section">
+            <div class="page-title">Watchlists</div>
+            <div class="page-subtitle">Lists of subjects under active monitoring, with case context.</div>
+          </div>
+          <div class="left-section" style="padding-bottom:16px;" id="watchlistNav"></div>
+          <div class="left-section" style="padding-bottom:16px;">
+            <button class="btn btn-primary btn-block" id="newWatchlistBtn">New watchlist</button>
+          </div>
+        </div>
+        <div class="page-split__divider"></div>
+        <div class="page-split__right" id="watchlistDetail"></div>
+      </div>
+    </section>
+
+    <!-- ---------- SEARCH HISTORY PAGE ---------- -->
+    <section class="page" id="page-history">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="historyArea"></div>
+      </div>
+    </section>
+
+    <!-- ---------- IMPORT CENTRE PAGE ---------- -->
+    <section class="page" id="page-import">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="importArea"></div>
+      </div>
+    </section>
+
+    <!-- ---------- INDEX MANAGEMENT PAGE ---------- -->
+    <section class="page" id="page-index">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="indexArea"></div>
+      </div>
+    </section>
+
+    <!-- ---------- ADMINISTRATION PAGE ---------- -->
+    <section class="page" id="page-admin">
+      <div class="page-split page-split--wide">
+        <div class="page-split__right" id="adminArea"></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ===================== OVERLAYS ===================== -->
+<div class="overlay-backdrop" id="modalBackdrop"></div>
+<div class="overlay-backdrop drawer-mode" id="drawerBackdrop"></div>
+<div class="toast-stack" id="toastStack"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

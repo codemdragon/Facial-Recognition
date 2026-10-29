@@ -1,0 +1,29 @@
+# Git / IDE
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+
+# Large data files (mounted as volumes at runtime)
+Found*/
+*.zip
+sample_db/
+
+# Upload temp files
+face_app/uploads/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Dev artifacts
+*.log
+pip_log.txt
+install_deps.py
+WhatsApp Image*
+
+# Python cache
+face_app/__pycache__/
+face_app/ui/__pycache__/

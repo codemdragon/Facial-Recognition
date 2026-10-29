@@ -1,0 +1,13 @@
+{
+  "folders": [
+    "E:/Python Projects/facial Recog/test_sample"
+  ],
+  "model": "Facenet",
+  "detector": "dlib",
+  "clusters": 8,
+  "workers": 4,
+  "top_n": 27,
+  "min_score": 30,
+  "device": "auto",
+  "mode": "all"
+}

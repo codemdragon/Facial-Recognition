@@ -1,0 +1,9 @@
+{
+  "device": "auto",
+  "last_build": {
+    "db_root": "E:\\facial Recog\\face_app\\sample_db",
+    "model": "Facenet",
+    "detector": "opencv",
+    "clusters": 3
+  }
+}

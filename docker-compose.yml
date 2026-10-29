@@ -1,0 +1,80 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# CPLC Face Search — docker-compose.yml
+#
+# Services:
+#   db    — PostgreSQL 16 (stores index metadata + search history)
+#   app   — Flask API server (face search backend)
+#
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  TO POINT AT DIFFERENT IMAGE FOLDERS AT A NEW DEPLOYMENT SITE:  ║
+# ║  Edit the  volumes:  section under the `app` service below.     ║
+# ║  Add one line per folder:  /host/path:/data/folder_name:ro      ║
+# ║  Then set that path in the desktop app's folder configuration.  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
+# Quick start:
+#   docker compose up -d
+#   # Open desktop app on Windows, point to http://server-ip:5000
+# ──────────────────────────────────────────────────────────────────────────────
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    container_name: cplc_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       cplc_faces
+      POSTGRES_USER:     cplc
+      POSTGRES_PASSWORD: cplc          # ← change in production
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"       # remove this line to keep Postgres private
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cplc -d cplc_faces"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Flask API ───────────────────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cplc_face_app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      CPLC_PG_DSN:        postgresql://cplc:cplc@db:5432/cplc_faces
+      FACE_DEVICE:        cpu           # change to "gpu" on a CUDA host
+      TF_CPP_MIN_LOG_LEVEL: "2"
+
+    # ══════════════════════════════════════════════════════════════════
+    # IMAGE FOLDER MOUNTS
+    # Add one volume mount per folder of images.
+    # Format: /absolute/path/on/host:/data/folder_name:ro
+    #
+    # Example for a server with two found-persons folders:
+    #   - /srv/images/found_set_1:/data/Found_1:ro
+    #   - /srv/images/found_set_2:/data/Found_2:ro
+    #
+    # On Windows hosts use drive-letter paths:
+    #   - E:/Found 1:/data/Found_1:ro
+    # ══════════════════════════════════════════════════════════════════
+    volumes:
+      - ./face_app/uploads:/app/uploads   # query image temp storage
+      # ── ADD YOUR IMAGE FOLDERS BELOW ──────────────────────────────
+      # - /path/to/Found_1:/data/Found_1:ro
+      # - /path/to/Found_2:/data/Found_2:ro
+
+    ports:
+      - "5000:5000"
+
+volumes:
+  pg_data:
+    driver: local

@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face Match — DeepFace vector search</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2a3241;
+    --text:#e6edf3; --muted:#8b949e; --accent:#7c5cff; --accent2:#22d3ee;
+    --good:#3fb950; --warn:#d29922; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,sans-serif;background:var(--bg);color:var(--text)}
+  .wrap{max-width:1400px;margin:0 auto;padding:16px}
+  header{display:flex;align-items:center;gap:14px;padding:10px 0 18px;border-bottom:1px solid var(--border);margin-bottom:18px}
+  header h1{font-size:20px;margin:0;letter-spacing:.02em}
+  header .dot{width:8px;height:8px;border-radius:50%;background:var(--muted);transition:background .3s}
+  header .dot.live{background:var(--good);box-shadow:0 0 8px var(--good)}
+  header .dot.build{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+  header .dot.err{background:var(--bad)}
+  header .sub{color:var(--muted);font-size:12px}
+  .gpuchip{margin-left:auto;font-size:12px;background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:6px 12px;color:var(--muted);display:flex;align-items:center;gap:8px}
+  .gpuchip .glyph{width:7px;height:7px;border-radius:50%;background:var(--muted)}
+  .gpuchip.gpu .glyph{background:var(--good);box-shadow:0 0 6px var(--good)}
+  .gpuchip.cpu .glyph{background:var(--warn)}
+  .cols{display:grid;grid-template-columns:minmax(360px,0.9fr) 1.4fr;gap:18px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:16px}
+  .panel h2{font-size:14px;margin:0 0 12px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  input[type=text],select{
+    width:100%;background:var(--panel2);border:1px solid var(--border);color:var(--text);
+    padding:9px 10px;border-radius:8px;font-size:13px;outline:none}
+  input[type=text]:focus,select:focus{border-color:var(--accent)}
+  .row{display:flex;gap:8px;align-items:flex-end}
+  button{
+    background:var(--accent);color:#fff;border:0;padding:9px 14px;border-radius:8px;
+    cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap}
+  button:hover{filter:brightness(1.1)}
+  button.ghost{background:var(--panel2);border:1px solid var(--border);color:var(--text)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .progress{height:8px;background:var(--panel2);border-radius:6px;overflow:hidden;margin-top:12px;display:none}
+  .progress .bar{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .3s}
+  .status{font-size:12px;color:var(--muted);margin-top:8px;min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .status.err{color:var(--bad)}
+  .status.ok{color:var(--good)}
+  .summary{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;display:none}
+  .stat{background:var(--panel2);border:1px solid var(--border);border-radius:8px;padding:8px 12px;min-width:86px}
+  .stat b{display:block;font-size:16px}
+  .stat span{font-size:11px;color:var(--muted)}
+  .sections{margin-top:14px;display:none}
+  .sec{border:1px solid var(--border);border-radius:10px;margin-bottom:10px;overflow:hidden}
+  .sec>header{display:flex;gap:10px;align-items:center;padding:10px 12px;cursor:pointer;background:var(--panel2);border-bottom:1px solid transparent}
+  .sec.open>header{border-bottom-color:var(--border)}
+  .sec>header .name{font-weight:600;font-size:13px}
+  .sec>header .cnt{margin-left:auto;font-size:12px;color:var(--muted)}
+  .sec .body{display:none;padding:10px;max-height:320px;overflow:auto}
+  .sec.open .body{display:block}
+  .thumbgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px}
+  .thumb{position:relative;border-radius:8px;overflow:hidden;background:var(--panel2)}
+  .thumb img{width:100%;height:92px;object-fit:cover;display:block}
+  .thumb .d{position:absolute;right:3px;bottom:3px;font-size:10px;background:rgba(0,0,0,.65);padding:1px 5px;border-radius:5px}
+  .thumb .n{display:block;font-size:9px;color:var(--muted);padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .drop{border:2px dashed var(--border);border-radius:12px;padding:28px 16px;text-align:center;color:var(--muted);cursor:pointer;transition:border-color .2s, background .2s}
+  .drop.hover{border-color:var(--accent);background:rgba(124,92,255,.08)}
+  .drop b{color:var(--text)}
+  .qprev{display:none;align-items:center;gap:12px;margin-top:12px}
+  .qprev img{width:64px;height:64px;object-fit:cover;border-radius:8px}
+  .qprev .meta{font-size:12px;color:var(--muted)}
+  .slider{display:flex;align-items:center;gap:10px}
+  .slider input{flex:1;accent-color:var(--accent)}
+  .slider output{font-size:13px;font-weight:600;min-width:34px;text-align:right}
+  .seg{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:4px 0 2px}
+  .seg button{flex:1;border-radius:0;background:var(--panel2);border:0;color:var(--muted);padding:9px;font-size:12px}
+  .seg button.on{background:var(--accent);color:#fff;font-weight:600}
+  .results{display:none;margin-top:14px}
+  .results h3{font-size:14px;margin:0 0 10px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+  .card{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--panel2);position:relative}
+  .card a{display:block}
+  .card img{width:100%;height:150px;object-fit:cover;display:block}
+  .card .info{padding:8px 10px}
+  .card .sim{font-size:15px;font-weight:700}
+  .card .path{font-size:10px;color:var(--muted);word-break:break-all;max-height:26px;overflow:hidden}
+  .tag{display:inline-block;font-size:10px;padding:2px 7px;border-radius:20px;background:rgba(34,211,238,.15);color:var(--accent2);margin-top:5px}
+  .empty{color:var(--muted);font-size:13px;padding:16px 0}
+  .modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:50;align-items:center;justify-content:center}
+  .modal.open{display:flex}
+  .modal .box{background:var(--panel);border:1px solid var(--border);border-radius:14px;width:min(720px,94vw);max-height:82vh;display:flex;flex-direction:column}
+  .modal .head{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--border)}
+  .modal .head input{flex:1}
+  .modal .body{flex:1;overflow:auto;padding:12px 16px}
+  .modal .body .up{color:var(--muted);cursor:pointer;padding:8px 10px;border-radius:8px;font-size:13px}
+  .modal .body .up:hover{background:var(--panel2)}
+  .drives{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+  .drives button{background:var(--panel2);border:1px solid var(--border);color:var(--text);padding:7px 12px}
+  .dirrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px}
+  .dirrow:hover{background:var(--panel2)}
+  .dirrow .arrow{color:var(--muted)}
+  .modal .foot{display:flex;gap:8px;justify-content:flex-end;padding:12px 16px;border-top:1px solid var(--border)}
+  .muted{color:var(--muted)}
+  .small{font-size:11px}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}
+  @media(max-width:960px){.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div><h1>Face Match</h1><div class="sub">DeepFace embeddings &middot; FAISS vector quantization</div></div>
+    <div class="dot" id="dot"></div>
+    <span class="gpuchip" id="gpuchip"><span class="glyph"></span><span id="gpuchiptxt">probing&hellip;</span></span>
+  </header>
+
+  <div class="cols">
+
+    <!-- LEFT: database -->
+    <div>
+      <div class="panel">
+        <h2>Picture database</h2>
+        <label>Folder containing the pictures (subfolders are fine; separate multiple folders with ;)</label>
+        <div class="row">
+          <input type="text" id="dbRoot" placeholder="E:\Found 1; E:\Found 2" autocomplete="off">
+          <button id="btnBrowse" class="ghost">Browse&hellip;</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:1">
+            <label>Clusters (vector sections)</label>
+            <input type="number" id="clusters" value="8" min="1" max="256" style="width:100%">
+          </div>
+          <div style="flex:1">
+            <label>Workers (parallel)</label>
+            <input type="number" id="workers" value="4" min="1" max="16" style="width:100%">
+          </div>
+          <div style="flex:1">
+            <label>Model</label>
+            <select id="model">
+              <option value="Facenet">Facenet</option>
+              <option value="GhostFaceNet">GhostFaceNet</option>
+              <option value="VGG-Face">VGG-Face</option>
+              <option value="Facenet512">Facenet512</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <label>Detector</label>
+            <select id="detector">
+              <option value="opencv">opencv</option>
+              <option value="mtcnn">mtcnn</option>
+              <option value="retinaface">retinaface</option>
+            </select>
+          </div>
+          <div style="flex:1">
+            <label>Device</label>
+            <select id="device">
+              <option value="auto">auto</option>
+              <option value="gpu">gpu</option>
+              <option value="cpu">cpu</option>
+            </select>
+          </div>
+        </div>
+        <div class="small muted" id="deviceHint" style="margin-top:6px"></div>
+        <div class="row" style="margin-top:14px">
+          <button id="btnBuild" style="flex:1">Build index</button>
+          <label class="checkbox" style="padding:0 8px;margin:0"><input type="checkbox" id="forceRebuild"> full rebuild</label>
+        </div>
+        <div class="progress"><div class="bar" id="bar"></div></div>
+        <div class="status" id="statusLeft"></div>
+        <div class="summary" id="summary"></div>
+        <div class="sections" id="sections"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: search -->
+    <div>
+      <div class="panel">
+        <h2>Search</h2>
+        <label>Photo to compare against the database</label>
+        <div class="drop" id="drop">
+          <b>Drop a photo here</b> or click to choose a file
+        </div>
+        <input type="file" id="file" accept="image/*" hidden>
+        <div class="qprev" id="qprev">
+          <img id="qimg" alt="">
+          <div class="meta">
+            <b id="qname"></b><br>
+            <span class="muted">query image</span><br>
+            <a class="small" href="javascript:void 0" id="qclear"></a>
+          </div>
+        </div>
+
+        <label style="margin-top:16px">Number of matches to return</label>
+        <div class="slider">
+          <input type="range" id="topN" min="1" max="200" value="12">
+          <output id="topNout">12</output>
+        </div>
+
+        <label>Search mode</label>
+        <div class="seg">
+          <button id="modeAll" class="on" data-mode="all">Across all sections</button>
+          <button id="modeSec" data-mode="sections">Top matches per section</button>
+        </div>
+
+        <button id="btnSearch" style="width:100%;margin-top:14px">Find matches</button>
+        <div class="status" id="statusRight"></div>
+
+        <div class="results" id="results">
+          <h3>Matches</h3>
+          <div class="cards" id="cards"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- folder picker modal -->
+<div class="modal" id="modal">
+  <div class="box">
+    <div class="head">
+      <input type="text" id="navPath" placeholder="Path">
+      <button id="btnGo" class="ghost">Go</button>
+    </div>
+    <div class="body" id="navBody"></div>
+    <div class="foot">
+      <span class="small muted" id="navCount"></span>
+      <button class="ghost" id="btnCancelModal">Cancel</button>
+      <button class="ghost" id="btnAddFolder" title="Append this folder to database selection">+ Add folder</button>
+      <button id="btnUseFolder">Set folder</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let queryFile = null;
+let current = {};
+
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  if(!res.ok){ let err=''; try{err=(await res.json()).error}catch(e){} throw new Error(err || res.statusText); }
+  return res.json();
+}
+
+/* ---------- status / initial load ---------- */
+async function probeGpu(){
+  try{
+    const g = await api('/api/gpu');
+    const chip=$('#gpuchip'), txt=$('#gpuchiptxt');
+    if(g.tensorflow_gpu && g.gpus && g.gpus.length){
+      const gpu=g.gpus.map(x=>x.name+' · '+(x.memory_total_mb/1024).toFixed(0)+'GB').join(' + ');
+      txt.textContent='GPU · '+gpu+(g.faiss_gpu_supported?' · gpu-index':'');
+      chip.className='gpuchip gpu';
+      $('#deviceHint').textContent='TensorFlow runs on the GPU.'+(g.mode==='gpu'?'':' (set device to gpu for full GPU mode)');
+    } else if(g.tensorflow_gpu){
+      txt.textContent='GPU ready (names unavailable)';
+      chip.className='gpuchip gpu';
+      $('#deviceHint').textContent='TensorFlow runs on the GPU. Device mode: '+g.mode+'.';
+    } else {
+      const hasHardware = g.gpus && g.gpus.length;
+      txt.textContent='CPU mode';
+      chip.className='gpuchip cpu';
+      $('#deviceHint').textContent = hasHardware
+        ? 'GPU found ('+g.gpus.map(x=>x.name).join(', ')+') but this TensorFlow wheel cannot use it — on the GPU server run the Linux setup script.'
+        : 'No GPU detected. Device mode: '+g.mode+'. Embeddings run on CPU.';
+    }
+    $('#device').value=g.mode;
+  }catch(e){
+    $('#gpuchiptxt').textContent='GPU probe failed';
+  }
+}
+$('#device').onchange=async()=>{
+  const dev=$('#device').value;
+  try{
+    const r=await api('/api/device',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({device:dev})});
+    $('#deviceHint').textContent=r.message;
+    $('#gpuchiptxt').textContent=r.message;
+  }catch(e){
+    $('#deviceHint').textContent='Error: '+e.message;
+  }
+};
+
+async function refreshStatus(){
+  try{
+    const st = await api('/api/build_status');
+    const d = $('#dot');
+    if(st.job && st.job.running){ d.className='dot build'; }
+    else if(st.job && st.job.error){ d.className='dot err'; }
+    else if(st.summary){ d.className='dot live'; }
+    else { d.className='dot'; }
+    if(st.summary) renderSummary(st.summary);
+    if(st.job && st.job.running){ $('#statusLeft').textContent='Indexing '+st.job.processed+'/'+st.job.total+' …'; }
+    else if(st.job && st.job.error){ $('#statusLeft').className='status err'; $('#statusLeft').textContent='Error: '+st.job.error; }
+    else if(st.summary) $('#statusLeft').textContent='Index ready.';
+    else if(st.db_root) $('#dbRoot').value=st.db_root;
+    return st;
+  }catch(e){ return null; }
+}
+
+function renderSummary(s){
+  $('#summary').style.display='flex';
+  $('#summary').innerHTML =
+    stat('Images', s.count) + stat('Vector size', s.dim) + stat('Sections', s.num_clusters) + stat('Model', s.model) + stat('Detector', s.detector);
+  if(s.sections){
+    $('#sections').style.display='block';
+    renderSections();
+  }
+}
+const stat=(a,b)=>`<div class="stat"><b>${b}</b><span>${a}</span></div>`;
+
+function renderSections(){
+  $('#sections').innerHTML='<label>Sections (k-means over embedding vectors)</label>';
+  fetch('/api/sections').then(r=>r.json()).then(d=>{
+    d.sections.forEach(sec=>{
+      const el=document.createElement('div');
+      el.className='sec open';
+      el.innerHTML=`<header><span class="name">${sec.name}</span><span class="cnt">${sec.count} photos</span></header>
+        <div class="body"><div class="thumbgrid"></div></div>`;
+      el.querySelector('header').onclick=()=>el.classList.toggle('open');
+      const grid=el.querySelector('.thumbgrid');
+      sec.members.forEach(m=>{
+        const t=document.createElement('div'); t.className='thumb';
+        const relNorm = m[0].replace(/\\/g, '/');
+        const parts = relNorm.split('/');
+        const folder = parts.length > 1 ? `[${parts[0]}] ` : '';
+        t.innerHTML=`<img loading="lazy" src="/api/image?kind=db&rel=${encURI(m[0])}" alt="">
+                      <span class="d">${(m[1]*100).toFixed(1)}</span><span class="n" title="${esc(m[0])}">${esc(folder + parts[parts.length-1])}</span>`;
+        grid.appendChild(t);
+      });
+      $('#sections').appendChild(el);
+    });
+  });
+}
+
+/* ---------- folder browser ---------- */
+$('#btnBrowse').onclick=()=>openModal($('#dbRoot').value||'');
+$('#btnCancelModal').onclick=()=>$('#modal').classList.remove('open');
+$('#btnGo').onclick=()=>openModal($('#navPath').value);
+$('#navPath').addEventListener('keydown',e=>{ if(e.key==='Enter') openModal($('#navPath').value); });
+$('#btnUseFolder').onclick=()=>{ $('#dbRoot').value=$('#modal').dataset.path||''; $('#modal').classList.remove('open'); };
+$('#btnAddFolder').onclick=()=>{
+  const cur = ($('#modal').dataset.path||'').trim();
+  if(!cur) return;
+  const existing = $('#dbRoot').value.trim();
+  const parts = existing ? existing.split(';').map(s=>s.trim()).filter(Boolean) : [];
+  if(!parts.includes(cur)){
+    parts.push(cur);
+    $('#dbRoot').value = parts.join('; ');
+  }
+  $('#modal').classList.remove('open');
+};
+
+async function openModal(path){
+  $('#modal').classList.add('open');
+  await nav(path);
+}
+async function nav(path){
+  const d = await api('/api/listdir?path='+encodeURIComponent(path||''));
+  $('#modal').dataset.path=d.current;
+  $('#navPath').value=d.current;
+  $('#navCount').textContent=d.count_images? (d.count_images+' image files here') : '';
+  let html='';
+  if(d.drives.length) html+=`<div class="drives">${d.drives.map(x=>`<button onclick="nav('${x}')">${x}</button>`).join('')}</div>`;
+  if(d.parent) html+=`<div class="up" onclick="nav('${esc(d.parent.replace(/\\/g,'\\\\'))}')">.. up one level</div>`;
+  d.entries.filter(e=>e.type==='dir').forEach(e=>{
+    html+=`<div class="dirrow" onclick="nav(${JSON.stringify(e.path)})"><span class="arrow">&#9656;</span>${esc(e.name)}</div>`;
+  });
+  $('#navBody').innerHTML=html||'<div class="empty">No subfolders here.</div>';
+}
+
+/* ---------- build ---------- */
+$('#btnBuild').onclick=async()=>{
+  const dbRoot=$('#dbRoot').value.trim();
+  if(!dbRoot){ $('#statusLeft').textContent='Enter a folder path first.'; return; }
+  $('#statusLeft').className='status';
+  $('#statusLeft').textContent='Starting…';
+  $('#bar').style.width='0%'; $('.progress').style.display='block';
+  try{
+    await api('/api/build',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      db_root:dbRoot, model:$('#model').value, detector:$('#detector').value,
+      clusters:+$('#clusters').value||8, workers:+$('#workers').value||4,
+      force: $('#forceRebuild').checked})});
+    pollBuild();
+  }catch(e){
+    $('#statusLeft').className='status err';
+    $('#statusLeft').textContent='Error: '+e.message;
+    $('.progress').style.display='none';
+  }
+};
+async function pollBuild(){
+  const t0=Date.now();
+  const timer=setInterval(async()=>{
+    const st=await refreshStatus();
+    if(!st || !st.job){ clearInterval(timer); return; }
+    if(st.job.running){
+      const pct=st.job.total? (st.job.processed/st.job.total*100):0;
+      $('#bar').style.width=pct+'%';
+      $('#statusLeft').textContent=`Indexing ${st.job.processed}/${st.job.total} · ${st.job.current||''}`;
+    } else {
+      clearInterval(timer);
+      $('.progress').style.display='none';
+      if(st.job.error){ $('#statusLeft').className='status err'; $('#statusLeft').textContent='Error: '+st.job.error; }
+      else {
+        $('#statusLeft').className='status ok';
+        const stt=st.job.stats||{};
+        const when=((Date.now()-t0)/1000).toFixed(1);
+        const parts=[];
+        if(stt.total_files!=null) parts.push(`scan: ${stt.total_files} files`);
+        if(stt.embedded) parts.push(`embedded: ${stt.embedded}`);
+        if(stt.kept) parts.push(`reused: ${stt.kept}`);
+        if(stt.removed) parts.push(`removed: ${stt.removed}`);
+        if(stt.reclustered) parts.push('re-clustered'); else parts.push('sections kept');
+        $('#statusLeft').textContent=`Done in ${when}s · ${parts.join(' · ')}`;
+        renderSummary(st.summary);
+      }
+    }
+  },700);
+}
+
+/* ---------- search ---------- */
+const drop=$('#drop'), file=$('#file');
+drop.onclick=()=>file.click();
+drop.ondragover=e=>{e.preventDefault();drop.classList.add('hover');};
+drop.ondragleave=()=>drop.classList.remove('hover');
+drop.ondrop=e=>{
+  e.preventDefault();drop.classList.remove('hover');
+  if(e.dataTransfer.files.length) setQuery(e.dataTransfer.files[0]);
+};
+file.onchange=()=>{ if(file.files.length) setQuery(file.files[0]); };
+function setQuery(f){
+  queryFile=f;
+  $('#qprev').style.display='flex';
+  $('#qname').textContent=f.name;
+  $('#qimg').src=URL.createObjectURL(f);
+  $('#qclear').textContent='remove';
+  $('#qclear').onclick=()=>{ queryFile=null; $('#qprev').style.display='none'; file.value=''; };
+}
+$('#topN').oninput=()=>$('#topNout').textContent=$('#topN').value;
+$('#modeAll').onclick=()=>setMode('all');
+$('#modeSec').onclick=()=>setMode('sections');
+function setMode(m){
+  $('#modeAll').classList.toggle('on',m==='all');
+  $('#modeSec').classList.toggle('on',m==='sections');
+}
+$('#btnSearch').onclick=async()=>{
+  if(!queryFile){ $('#statusRight').textContent='Choose a photo first.'; return; }
+  const fd=new FormData();
+  fd.append('image',queryFile);
+  fd.append('top_n',$('#topN').value);
+  fd.append('mode', $('#modeAll').classList.contains('on')?'all':'sections');
+  $('#statusRight').className='status';
+  $('#statusRight').textContent='Searching…';
+  try{
+    const res=await api('/api/search',{method:'POST',body:fd});
+    $('#statusRight').className='status';
+    $('#statusRight').textContent=res.matches.length? `${res.matches.length} matches found · across ${Object.keys(res.sections_seen).length} sections` : 'No matches above threshold.';
+    renderResults(res);
+  }catch(e){
+    $('#statusRight').className='status err';
+    $('#statusRight').textContent='Error: '+e.message;
+  }
+};
+function renderResults(res){
+  $('#cards').innerHTML='';
+  if(!res.matches.length){ $('#cards').innerHTML='<div class="empty">No matches.</div>'; $('#results').style.display='block'; return; }
+  const colors=['#3fb950','#56d364','#7ee787','#d29922','#e3b341','#f85149'];
+  res.matches.forEach(m=>{
+    const c=document.createElement('div'); c.className='card';
+    const pct=(m.similarity*100).toFixed(1);
+    const color = m.similarity>0.7? colors[0] : m.similarity>0.5? colors[1] : m.similarity>0.4? colors[2] : m.similarity>0.3? colors[3] : colors[4];
+    const relNorm = m.rel.replace(/\\/g, '/');
+    const parts = relNorm.split('/');
+    const folder = parts.length > 1 ? parts[0] : '';
+    const fname = parts[parts.length - 1];
+    const folderBadge = folder ? `<span class="tag" style="background:rgba(124,92,255,.25);color:#b39ddb;margin-right:4px;font-size:9px">${esc(folder)}</span>` : '';
+    c.innerHTML=`<a href="/api/image?kind=db&rel=${encURI(m.rel)}&full=1" target="_blank"><img loading="lazy" src="/api/image?kind=db&rel=${encURI(m.rel)}" alt=""></a>
+      <div class="info"><div class="sim" style="color:${color}">${pct}%</div>
+      <div class="path" title="${esc(m.rel)}">${folderBadge}<span>${esc(fname)}</span></div>
+      <span class="tag">${m.section}</span></div>`;
+    $('#cards').appendChild(c);
+  });
+  $('#results').style.display='block';
+}
+
+/* ---------- helpers ---------- */
+function encURI(s){return encodeURIComponent(s);}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function base(p){return p.split(/[\\/]/).pop();}
+
+/* ---------- persistence ---------- */
+(function(){
+  const ls=k=>localStorage.getItem(k);
+  if(ls('fr_db')) $('#dbRoot').value=ls('fr_db');
+  if(ls('fr_model')) $('#model').value=ls('fr_model');
+  if(ls('fr_det')) $('#detector').value=ls('fr_det');
+  if(ls('fr_top')) $('#topN').value=$('#topNout').textContent=ls('fr_top');
+  if(ls('fr_workers')) $('#workers').value=ls('fr_workers');
+  const save=()=>{localStorage.setItem('fr_db',$('#dbRoot').value);localStorage.setItem('fr_model',$('#model').value);
+    localStorage.setItem('fr_det',$('#detector').value);localStorage.setItem('fr_top',$('#topN').value);
+    localStorage.setItem('fr_workers',$('#workers').value);};
+  setInterval(save,2000);
+  window.addEventListener('beforeunload',save);
+})();
+
+refreshStatus();
+probeGpu();
+</script>
+</body>
+</html>
