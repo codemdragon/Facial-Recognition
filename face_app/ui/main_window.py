@@ -289,7 +289,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CPLC Face Search")
-        self.setMinimumSize(1280, 780)
+        self.setMinimumSize(1100, 680)
+        self.resize(1280, 820)
         self._index = None
         self._query_path = None
         self._matches = []
@@ -492,10 +493,40 @@ class MainWindow(QMainWindow):
     # ── left panel ────────────────────────────────────────────────────────────
 
     def _make_left_panel(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(415)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollBar:vertical {
+                background: #07101e;
+                width: 8px;
+                margin: 0;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #1e3a5f;
+                min-height: 24px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #3b8fe8;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+                background: none;
+            }
+        """)
+
         panel = QWidget()
-        panel.setFixedWidth(400)
+        panel.setStyleSheet("background: transparent;")
         lay = QVBoxLayout(panel)
-        lay.setContentsMargins(0, 0, 6, 0)
+        lay.setContentsMargins(0, 0, 8, 8)
         lay.setSpacing(10)
 
         # ── Folder configuration ─────────────────────────────────────────────
@@ -673,6 +704,7 @@ class MainWindow(QMainWindow):
             lbl = QLabel(label_text)
             lbl.setFixedWidth(LBL_W)
             lbl.setStyleSheet("color: #7a9fc2; font-size: 8pt;")
+            widget.setMinimumHeight(26)
             r.addWidget(lbl)
             r.addWidget(widget, 1)
             return r
@@ -752,7 +784,8 @@ class MainWindow(QMainWindow):
         lay.addWidget(gb_index)
         lay.addStretch()
 
-        return panel
+        scroll.setWidget(panel)
+        return scroll
 
     # ── right panel ───────────────────────────────────────────────────────────
 
