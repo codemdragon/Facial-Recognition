@@ -2,13 +2,13 @@
   "folders": [
     "E:/Python Projects/facial Recog/test_sample"
   ],
-  "model": "ArcFace",
+  "model": "Facenet",
   "detector": "retinaface",
   "clusters": 16,
   "workers": 4,
-  "top_n": 15,
-  "min_score": 30,
+  "top_n": 41,
+  "min_score": 14,
   "device": "auto",
   "mode": "all",
-  "search_strategy": "Fused (Best)"
+  "search_strategy": "Periocular (Upper)"
 }

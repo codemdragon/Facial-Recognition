@@ -31,7 +31,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 MODELS = ["Facenet", "GhostFaceNet", "VGG-Face", "Facenet512", "ArcFace", "SFace", "OpenFace", "DeepFace"]
 DETECTORS = ["opencv", "mtcnn", "retinaface", "dlib"]
 
-CACHE_VERSION = "v4_dual"
+CACHE_VERSION = "v5_clean"
 DETECT_BATCH = 24            # files sent to each extraction worker task
 EMBED_CHUNK = 384            # aligned faces per batched GPU forward
 RETRAIN_NEW_MIN = 1024       # re-cluster from scratch when this many new vectors
@@ -172,7 +172,7 @@ def embed(path: str, model: str, detector: str, return_upper: bool = False):
         logger.warning("Face extraction failed for %s: %s", path, exc)
         return (None, None) if return_upper else None
 
-    if not faces:
+    if not faces or faces[0].get("confidence", 0.0) <= 0.0:
         return (None, None) if return_upper else None
 
     face_raw = np.asarray(faces[0]["face"], dtype=np.float32)
@@ -263,7 +263,10 @@ def embed_many(abs_paths, relpaths, model, detector, workers, progress=None, bas
                     img_path=abs_paths[rel], detector_backend=detector, enforce_detection=False,
                     align=True, grayscale=False, expand_percentage=0, max_faces=1,
                 )
-                face = np.asarray(res[0]["face"], dtype=np.float32) if res else None
+                if res and res[0].get("confidence", 0.0) > 0.0 and res[0].get("face") is not None:
+                    face = np.asarray(res[0]["face"], dtype=np.float32)
+                else:
+                    face = None
             except Exception as exc:
                 logger.warning("Face extraction failed for %s: %s", rel, exc)
                 face = None
@@ -285,7 +288,7 @@ def embed_many(abs_paths, relpaths, model, detector, workers, progress=None, bas
                 img_path=abs_paths[rel], detector_backend=detector, enforce_detection=False,
                 align=True, grayscale=False, expand_percentage=0, max_faces=1,
             )
-            if res and res[0].get("face") is not None:
+            if res and res[0].get("confidence", 0.0) > 0.0 and res[0].get("face") is not None:
                 face = np.asarray(res[0]["face"], dtype=np.float32)
                 if face.ndim == 3 and face.shape[-1] == 3:
                     faces[rel] = face
