@@ -185,28 +185,60 @@ def _avg_normalized(vecs):
     return (mean / n) if n > 0 else mean
 
 
-def _quality_warnings(face_obj) -> list:
-    """Return a list of human-readable quality warning strings for a detected face."""
+def _analyze_face_quality(face_obj) -> tuple:
+    """Analyze face detection quality and anatomical occlusion.
+
+    Returns:
+        warnings: list of human-readable strings
+        flags: dict of anatomical state:
+            - 'has_eyes': bool
+            - 'has_mouth': bool
+            - 'lower_occluded': bool (mask / hand over mouth)
+            - 'upper_occluded': bool (hat / sunglasses / eyes covered)
+    """
     warnings = []
     conf = face_obj.get("confidence", 1.0)
     area = face_obj.get("facial_area", {})
     w = area.get("w", 999)
     h = area.get("h", 999)
-    left_eye  = area.get("left_eye")
-    right_eye = area.get("right_eye")
+    left_eye   = area.get("left_eye")
+    right_eye  = area.get("right_eye")
+    mouth_left = area.get("mouth_left")
+    mouth_right = area.get("mouth_right")
+
+    has_eyes  = (left_eye is not None and right_eye is not None)
+    has_mouth = (mouth_left is not None and mouth_right is not None)
 
     if conf < 0.5:
         warnings.append(f"Low detection confidence ({conf:.0%}) — image may be blurry or face partially visible")
     if w < 60 or h < 60:
         warnings.append(f"Face region is very small ({w}×{h} px) — results may be unreliable")
-    if left_eye is None or right_eye is None:
-        warnings.append("Landmark detection failed (extreme pose, occlusion, or partial face)")
-    elif left_eye and right_eye:
+
+    if not has_eyes and has_mouth:
+        warnings.append("Eyes/forehead occluded or missing — upper periocular search disabled")
+    elif has_eyes and not has_mouth:
+        warnings.append("Mouth/jaw occluded (mask/hand detected) — activating periocular upper search")
+    elif not has_eyes and not has_mouth:
+        warnings.append("Landmark alignment failed (extreme angle or severe occlusion)")
+    elif has_eyes:
         dx = abs(left_eye[0] - right_eye[0])
         dy = abs(left_eye[1] - right_eye[1])
         eye_dist = (dx**2 + dy**2) ** 0.5
         if eye_dist < 20:
-            warnings.append(f"Inter-eye distance too small ({eye_dist:.0f} px) — image resolution may be too low")
+            warnings.append(f"Inter-eye distance too small ({eye_dist:.0f} px) — image resolution may be low")
+
+    flags = {
+        "has_eyes": has_eyes,
+        "has_mouth": has_mouth,
+        "lower_occluded": has_eyes and not has_mouth,
+        "upper_occluded": not has_eyes and has_mouth,
+    }
+    return warnings, flags
+
+
+def _quality_warnings(face_obj) -> list:
+    """Backwards-compatible wrapper returning only the warning strings list."""
+    warnings, _ = _analyze_face_quality(face_obj)
     return warnings
 
 
@@ -511,6 +543,33 @@ def meta_path(db_root, model: str, detector: str, k: int) -> str:
     return cache_path(db_root, model, detector, k).replace(".npz", ".json")
 
 
+def _cohort_mean(matrix, query_vec, max_samples=256) -> float:
+    """Fast cohort background mean dot product against a sample of gallery vectors."""
+    if matrix is None or query_vec is None or len(matrix) == 0:
+        return 0.0
+    n = len(matrix)
+    if n <= max_samples:
+        sample = matrix
+    else:
+        step = max(1, n // max_samples)
+        sample = matrix[::step][:max_samples]
+    dots = sample @ query_vec
+    return float(np.mean(dots))
+
+
+def _calibrate_similarity(sim: float, cohort_mean: float) -> float:
+    """Calibrate similarity against background cohort mean.
+    If a query vector has high baseline cosine alignment with generic faces
+    (hub / phantom face), this suppresses false positives to noise level while
+    preserving high genuine matches.
+    """
+    if cohort_mean <= 0.25:
+        return float(sim)
+    denom = max(0.05, 1.0 - cohort_mean)
+    calibrated = (sim - cohort_mean) / denom
+    return float(np.clip(calibrated, 0.0, 1.0))
+
+
 class FaceIndex:
     def __init__(self, vectors, relpaths, labels, centroids, stamps,
                  model, detector, num_clusters, db_root, build_stats=None,
@@ -728,23 +787,28 @@ class FaceIndex:
         if full_vec is None:
             raise ValueError("Could not produce a face embedding for the query image.")
 
-        # ── Auto-strategy: if 'fused' and query looks clean, downgrade to 'full'
-        # for higher precision (fewer false positives).  Degrade back to fused
-        # when quality is poor (occlusion/low confidence) so periocular takes over.
+        # ── Anatomically-aware auto-strategy:
         effective_mode = (search_mode or "fused").lower()
         if effective_mode in ("fused", "auto"):
-            has_occlusion_hint = any(
-                "confidence" in w.lower() or "landmark" in w.lower() or "occlu" in w.lower()
-                for w in quality_warnings
-            )
-            if not has_occlusion_hint and not quality_warnings:
-                # Clean image → full-face only (more precise)
+            is_lower_occluded = any("mouth/jaw occluded" in w.lower() for w in quality_warnings)
+            is_upper_occluded = any("eyes/forehead occluded" in w.lower() for w in quality_warnings)
+
+            if is_lower_occluded:
+                # Mask / hand over mouth -> Periocular upper face is the hero
+                effective_mode = "fused"
+            elif is_upper_occluded:
+                # Eyes covered / missing -> Periocular upper is invalid, use full face
                 effective_mode = "full"
             else:
-                effective_mode = "fused"
+                # Clean, unoccluded face -> Full face provides the highest precision
+                effective_mode = "full"
 
         n_items = len(self.relpaths)
         fetch_k = min(top_n * 2, n_items)
+
+        # Precompute cohort baseline means for score calibration
+        mu_full = _cohort_mean(self.vectors, full_vec)
+        mu_upper = _cohort_mean(self.upper_vectors, upper_vec) if upper_vec is not None else 0.0
 
         scores = {}
         # 1. Full-face similarity
@@ -753,7 +817,8 @@ class FaceIndex:
             sims_f, idxs_f = idx_full.search(full_vec.reshape(1, -1), fetch_k)
             for sim, i in zip(sims_f[0], idxs_f[0]):
                 if i >= 0:
-                    scores[i] = max(scores.get(i, -1.0), float(sim))
+                    calib_sim = _calibrate_similarity(float(sim), mu_full)
+                    scores[i] = max(scores.get(i, -1.0), calib_sim)
 
         # 2. Upper-face similarity
         if effective_mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
@@ -761,7 +826,8 @@ class FaceIndex:
             sims_u, idxs_u = idx_upper.search(upper_vec.reshape(1, -1), fetch_k)
             for sim, i in zip(sims_u[0], idxs_u[0]):
                 if i >= 0:
-                    scores[i] = max(scores.get(i, -1.0), float(sim))
+                    calib_sim = _calibrate_similarity(float(sim), mu_upper)
+                    scores[i] = max(scores.get(i, -1.0), calib_sim)
 
         ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
@@ -788,18 +854,22 @@ class FaceIndex:
 
         effective_mode = (search_mode or "fused").lower()
         if effective_mode in ("fused", "auto"):
-            has_occlusion_hint = any(
-                "confidence" in w.lower() or "landmark" in w.lower() or "occlu" in w.lower()
-                for w in quality_warnings
-            )
-            if not has_occlusion_hint and not quality_warnings:
+            is_lower_occluded = any("mouth/jaw occluded" in w.lower() for w in quality_warnings)
+            is_upper_occluded = any("eyes/forehead occluded" in w.lower() for w in quality_warnings)
+
+            if is_lower_occluded:
+                effective_mode = "fused"
+            elif is_upper_occluded:
                 effective_mode = "full"
             else:
-                effective_mode = "fused"
+                effective_mode = "full"
 
         mode = effective_mode
         wanted = set(sections) if sections else set(self.sections.keys())
         per = []
+
+        mu_full = _cohort_mean(self.vectors, full_vec)
+        mu_upper = _cohort_mean(self.upper_vectors, upper_vec) if upper_vec is not None else 0.0
 
         for label in wanted:
             ids = np.where(self.labels == label)[0]
@@ -816,7 +886,8 @@ class FaceIndex:
                 for sim, li in zip(sims_f[0], local_f[0]):
                     if li >= 0:
                         gid = ids[li]
-                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), float(sim))
+                        calib_sim = _calibrate_similarity(float(sim), mu_full)
+                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), calib_sim)
 
             if mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
                 sub_u = np.asarray([self.upper_vectors[i] for i in ids], dtype="float32")
@@ -825,7 +896,8 @@ class FaceIndex:
                 for sim, li in zip(sims_u[0], local_u[0]):
                     if li >= 0:
                         gid = ids[li]
-                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), float(sim))
+                        calib_sim = _calibrate_similarity(float(sim), mu_upper)
+                        sub_scores[gid] = max(sub_scores.get(gid, -1.0), calib_sim)
 
             for gid, sim in sub_scores.items():
                 per.append({
