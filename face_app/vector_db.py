@@ -154,9 +154,84 @@ def _get_upper_face(face_arr):
     return cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
-def embed(path: str, model: str, detector: str, return_upper: bool = False):
-    """Single-image embedding (used at search time).
-    Returns normalized full embedding, or (full_emb, upper_emb) if return_upper=True.
+def _apply_clahe(bgr_img):
+    """Apply CLAHE contrast enhancement on the L channel (LAB colour space).
+
+    bgr_img may be float32 [0,1] (from DeepFace) or uint8 [0,255].
+    CLAHE requires uint8, so we normalise in/out automatically.
+    """
+    is_float = bgr_img.dtype != np.uint8
+    if is_float:
+        # Clip to [0,1] guard against tiny float overshoots, then scale to uint8
+        u8 = (np.clip(bgr_img, 0.0, 1.0) * 255).astype(np.uint8)
+    else:
+        u8 = bgr_img
+
+    lab = cv2.cvtColor(u8, cv2.COLOR_BGR2LAB)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(4, 4))
+    lab[:, :, 0] = clahe.apply(lab[:, :, 0])
+    result_u8 = cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
+
+    if is_float:
+        return result_u8.astype(np.float32) / 255.0
+    return result_u8
+
+
+def _avg_normalized(vecs):
+    """Average a list of L2-normalized vectors and re-normalize the result."""
+    stacked = np.vstack(vecs).astype(np.float32)
+    mean = stacked.mean(axis=0)
+    n = np.linalg.norm(mean)
+    return (mean / n) if n > 0 else mean
+
+
+def _quality_warnings(face_obj) -> list:
+    """Return a list of human-readable quality warning strings for a detected face."""
+    warnings = []
+    conf = face_obj.get("confidence", 1.0)
+    area = face_obj.get("facial_area", {})
+    w = area.get("w", 999)
+    h = area.get("h", 999)
+    left_eye  = area.get("left_eye")
+    right_eye = area.get("right_eye")
+
+    if conf < 0.5:
+        warnings.append(f"Low detection confidence ({conf:.0%}) — image may be blurry or face partially visible")
+    if w < 60 or h < 60:
+        warnings.append(f"Face region is very small ({w}×{h} px) — results may be unreliable")
+    if left_eye is None or right_eye is None:
+        warnings.append("Landmark detection failed (extreme pose, occlusion, or partial face)")
+    elif left_eye and right_eye:
+        dx = abs(left_eye[0] - right_eye[0])
+        dy = abs(left_eye[1] - right_eye[1])
+        eye_dist = (dx**2 + dy**2) ** 0.5
+        if eye_dist < 20:
+            warnings.append(f"Inter-eye distance too small ({eye_dist:.0f} px) — image resolution may be too low")
+    return warnings
+
+
+def embed(path: str, model: str, detector: str, return_upper: bool = False,
+          return_quality: bool = False):
+    """Single-image embedding with Multi-Crop Test-Time Augmentation (TTA).
+
+    At search time, generates embeddings for three augmented views of the
+    detected face (original, horizontal flip, CLAHE-enhanced) and averages
+    them into a single robust 'super-embedding'.  The indexed database is
+    never touched; TTA only affects the query vector.
+
+    Args:
+        path: Path to the query image.
+        model: DeepFace model name (e.g. 'ArcFace').
+        detector: Face detector backend (e.g. 'retinaface').
+        return_upper: If True, also return an upper-face (periocular) embedding.
+        return_quality: If True, include a list of quality warning strings.
+
+    Returns:
+        • (full_emb)                          when return_upper=False, return_quality=False
+        • (full_emb, upper_emb)               when return_upper=True,  return_quality=False
+        • (full_emb, warnings)                when return_upper=False, return_quality=True
+        • (full_emb, upper_emb, warnings)     when return_upper=True,  return_quality=True
+        Any embedding may be None on failure.
     """
     try:
         faces = _extract_faces(
@@ -170,27 +245,51 @@ def embed(path: str, model: str, detector: str, return_upper: bool = False):
         )
     except Exception as exc:
         logger.warning("Face extraction failed for %s: %s", path, exc)
-        return (None, None) if return_upper else None
+        if return_upper and return_quality:
+            return None, None, []
+        if return_upper or return_quality:
+            return None, None
+        return None
 
     if not faces or faces[0].get("confidence", 0.0) <= 0.0:
-        return (None, None) if return_upper else None
+        if return_upper and return_quality:
+            return None, None, []
+        if return_upper or return_quality:
+            return None, None
+        return None
 
-    face_raw = np.asarray(faces[0]["face"], dtype=np.float32)
+    face_obj = faces[0]
+    quality_warnings = _quality_warnings(face_obj)
+
+    face_raw = np.asarray(face_obj["face"], dtype=np.float32)
     if face_raw.ndim != 3 or face_raw.shape[-1] != 3:
-        return (None, None) if return_upper else None
+        if return_upper and return_quality:
+            return None, None, quality_warnings
+        if return_upper or return_quality:
+            return None, None
+        return None
 
-    # DeepFace expects BGR input for img_path arrays
-    bgr_full = face_raw[:, :, ::-1]
+    # ── Build TTA augmented crops ────────────────────────────────────────────
+    # face_raw is RGB float32 [0,1]; BGR needed for cv2 / DeepFace.represent
+    bgr_full  = face_raw[:, :, ::-1]
+    bgr_flip  = cv2.flip(bgr_full, 1)
+    bgr_clahe = _apply_clahe(bgr_full)
+    tta_full  = [bgr_full, bgr_flip, bgr_clahe]  # 3 augmented views
+
     upper_face = _get_upper_face(face_raw)
-    bgr_upper = upper_face[:, :, ::-1] if upper_face is not None else bgr_full
+    if upper_face is not None:
+        bgr_upper  = upper_face[:, :, ::-1]
+        bgr_upper_flip  = cv2.flip(bgr_upper, 1)
+        bgr_upper_clahe = _apply_clahe(bgr_upper)
+        tta_upper = [bgr_upper, bgr_upper_flip, bgr_upper_clahe]
+    else:
+        tta_upper = tta_full  # fallback
 
-    targets = [bgr_full]
-    if return_upper:
-        targets.append(bgr_upper)
-
+    # ── Single batched forward pass for all augmentations ───────────────────
+    combined = tta_full + (tta_upper if return_upper else [])
     try:
         outs = DeepFace.represent(
-            img_path=targets,
+            img_path=combined,
             model_name=model,
             detector_backend="skip",
             enforce_detection=False,
@@ -199,10 +298,18 @@ def embed(path: str, model: str, detector: str, return_upper: bool = False):
         )
     except Exception as exc:
         logger.warning("DeepFace represent failed for %s: %s", path, exc)
-        return (None, None) if return_upper else None
+        if return_upper and return_quality:
+            return None, None, quality_warnings
+        if return_upper or return_quality:
+            return None, None
+        return None
 
     if not outs:
-        return (None, None) if return_upper else None
+        if return_upper and return_quality:
+            return None, None, quality_warnings
+        if return_upper or return_quality:
+            return None, None
+        return None
 
     def _norm_vec(item):
         if isinstance(item, list):
@@ -213,10 +320,23 @@ def embed(path: str, model: str, detector: str, return_upper: bool = False):
         n = np.linalg.norm(v)
         return (v / n) if n > 0 else None
 
-    emb_full = _norm_vec(outs[0])
+    # Average TTA embeddings for full face
+    full_vecs = [_norm_vec(outs[i]) for i in range(len(tta_full))]
+    full_vecs = [v for v in full_vecs if v is not None]
+    emb_full = _avg_normalized(full_vecs) if full_vecs else None
+
     if return_upper:
-        emb_upper = _norm_vec(outs[1]) if len(outs) > 1 else emb_full
+        offset = len(tta_full)
+        upper_vecs = [_norm_vec(outs[offset + i]) for i in range(len(tta_upper))]
+        upper_vecs = [v for v in upper_vecs if v is not None]
+        emb_upper = _avg_normalized(upper_vecs) if upper_vecs else emb_full
+
+        if return_quality:
+            return emb_full, emb_upper, quality_warnings
         return emb_full, emb_upper
+
+    if return_quality:
+        return emb_full, quality_warnings
     return emb_full
 
 
@@ -598,18 +718,37 @@ class FaceIndex:
         - 'auto' / 'fused': Maximum of full-face and upper-face similarity.
         - 'full': Standard full-face vector comparison.
         - 'upper_periocular': Compares eye/forehead/brow regions, eliminating mouth/jaw occlusions.
+
+        Returns (results_list, quality_warnings, effective_mode).
         """
-        full_vec, upper_vec = embed(query_path, self.model, self.detector, return_upper=True)
+        full_vec, upper_vec, quality_warnings = embed(
+            query_path, self.model, self.detector,
+            return_upper=True, return_quality=True,
+        )
         if full_vec is None:
             raise ValueError("Could not produce a face embedding for the query image.")
 
-        mode = (search_mode or "fused").lower()
+        # ── Auto-strategy: if 'fused' and query looks clean, downgrade to 'full'
+        # for higher precision (fewer false positives).  Degrade back to fused
+        # when quality is poor (occlusion/low confidence) so periocular takes over.
+        effective_mode = (search_mode or "fused").lower()
+        if effective_mode in ("fused", "auto"):
+            has_occlusion_hint = any(
+                "confidence" in w.lower() or "landmark" in w.lower() or "occlu" in w.lower()
+                for w in quality_warnings
+            )
+            if not has_occlusion_hint and not quality_warnings:
+                # Clean image → full-face only (more precise)
+                effective_mode = "full"
+            else:
+                effective_mode = "fused"
+
         n_items = len(self.relpaths)
         fetch_k = min(top_n * 2, n_items)
 
         scores = {}
         # 1. Full-face similarity
-        if mode in ("full", "fused", "auto"):
+        if effective_mode in ("full", "fused", "auto"):
             idx_full = self._flat_index(self.vectors)
             sims_f, idxs_f = idx_full.search(full_vec.reshape(1, -1), fetch_k)
             for sim, i in zip(sims_f[0], idxs_f[0]):
@@ -617,7 +756,7 @@ class FaceIndex:
                     scores[i] = max(scores.get(i, -1.0), float(sim))
 
         # 2. Upper-face similarity
-        if mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
+        if effective_mode in ("upper_periocular", "fused", "auto") and upper_vec is not None:
             idx_upper = self._flat_index(self.upper_vectors)
             sims_u, idxs_u = idx_upper.search(upper_vec.reshape(1, -1), fetch_k)
             for sim, i in zip(sims_u[0], idxs_u[0]):
@@ -637,14 +776,28 @@ class FaceIndex:
                 "section": section,
                 "section_id": label,
             })
-        return results
+        return results, quality_warnings, effective_mode
 
     def section_matches(self, query_path, sections=None, top_n=10, search_mode="fused"):
-        full_vec, upper_vec = embed(query_path, self.model, self.detector, return_upper=True)
+        full_vec, upper_vec, quality_warnings = embed(
+            query_path, self.model, self.detector,
+            return_upper=True, return_quality=True,
+        )
         if full_vec is None:
             raise ValueError("Could not produce a face embedding for the query image.")
 
-        mode = (search_mode or "fused").lower()
+        effective_mode = (search_mode or "fused").lower()
+        if effective_mode in ("fused", "auto"):
+            has_occlusion_hint = any(
+                "confidence" in w.lower() or "landmark" in w.lower() or "occlu" in w.lower()
+                for w in quality_warnings
+            )
+            if not has_occlusion_hint and not quality_warnings:
+                effective_mode = "full"
+            else:
+                effective_mode = "fused"
+
+        mode = effective_mode
         wanted = set(sections) if sections else set(self.sections.keys())
         per = []
 
@@ -684,7 +837,7 @@ class FaceIndex:
                 })
 
         per.sort(key=lambda r: r["similarity"], reverse=True)
-        return per[:top_n]
+        return per[:top_n], quality_warnings, effective_mode
 
     def all_sections(self):
         out = []

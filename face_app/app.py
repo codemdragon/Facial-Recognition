@@ -279,9 +279,9 @@ def api_search():
     try:
         mode = request.form.get("mode", "all")  # 'all' | 'sections'
         if mode == "sections":
-            matches = index.section_matches(save_path, top_n=top_n, search_mode=search_strategy)
+            matches, quality_warnings, effective_mode = index.section_matches(save_path, top_n=top_n, search_mode=search_strategy)
         else:
-            matches = index.search(save_path, top_n=top_n, search_mode=search_strategy)
+            matches, quality_warnings, effective_mode = index.search(save_path, top_n=top_n, search_mode=search_strategy)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 422
 
@@ -305,6 +305,8 @@ def api_search():
         "sections_seen": seen,
         "query_thumb": thumb,
         "top_n": len(matches),
+        "quality_warnings": quality_warnings,
+        "effective_mode": effective_mode,
     })
 
 

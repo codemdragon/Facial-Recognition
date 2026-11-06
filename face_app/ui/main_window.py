@@ -106,7 +106,7 @@ class BuildWorker(QThread):
 
 
 class SearchWorker(QThread):
-    finished = pyqtSignal(list)
+    finished = pyqtSignal(list, list, str)   # matches, quality_warnings, effective_mode
     error    = pyqtSignal(str)
 
     def __init__(self, index, query_path, top_n, mode, search_mode="fused"):
@@ -120,12 +120,14 @@ class SearchWorker(QThread):
     def run(self):
         try:
             if self.mode == "sections":
-                matches = self.index.section_matches(self.query_path, top_n=self.top_n,
-                                                     search_mode=self.search_mode)
+                matches, quality_warnings, effective_mode = self.index.section_matches(
+                    self.query_path, top_n=self.top_n, search_mode=self.search_mode
+                )
             else:
-                matches = self.index.search(self.query_path, top_n=self.top_n,
-                                            search_mode=self.search_mode)
-            self.finished.emit(matches)
+                matches, quality_warnings, effective_mode = self.index.search(
+                    self.query_path, top_n=self.top_n, search_mode=self.search_mode
+                )
+            self.finished.emit(matches, quality_warnings, effective_mode)
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -601,11 +603,43 @@ class MainWindow(QMainWindow):
         self._lbl_query_name.setAlignment(Qt.AlignCenter)
         gql.addWidget(self._lbl_query_name)
 
+        # Quality warning banner (hidden by default)
+        self._lbl_quality_warn = QLabel("")
+        self._lbl_quality_warn.setWordWrap(True)
+        self._lbl_quality_warn.setVisible(False)
+        self._lbl_quality_warn.setStyleSheet("""
+            QLabel {
+                background: rgba(245, 158, 11, 0.12);
+                border: 1px solid #f59e0b;
+                border-radius: 6px;
+                color: #f59e0b;
+                font-size: 7.5pt;
+                padding: 6px 8px;
+            }
+        """)
+        gql.addWidget(self._lbl_quality_warn)
+
+        # Auto-strategy info label (hidden by default)
+        self._lbl_auto_strategy = QLabel("")
+        self._lbl_auto_strategy.setVisible(False)
+        self._lbl_auto_strategy.setStyleSheet("""
+            QLabel {
+                background: rgba(59, 143, 232, 0.10);
+                border: 1px solid #1e3a5f;
+                border-radius: 6px;
+                color: #3b8fe8;
+                font-size: 7.5pt;
+                padding: 4px 8px;
+            }
+        """)
+
         btn_clear = QPushButton("Clear image")
         btn_clear.setObjectName("btnGhost")
         btn_clear.setFixedHeight(28)
         btn_clear.clicked.connect(self._clear_query)
         gql.addWidget(btn_clear)
+
+        gql.addWidget(self._lbl_auto_strategy)
 
         lay.addWidget(gb_query)
 
@@ -912,6 +946,8 @@ class MainWindow(QMainWindow):
         self._query_path = None
         self._drop.clear_image()
         self._lbl_query_name.setText("")
+        self._lbl_quality_warn.setVisible(False)
+        self._lbl_auto_strategy.setVisible(False)
 
     def _on_row_selected(self, current, previous):
         if current is None:
@@ -1047,6 +1083,10 @@ class MainWindow(QMainWindow):
         self._status_lbl.setText("Searching…")
         self._clear_results()
 
+        # Hide old quality / auto-mode banners before new search
+        self._lbl_quality_warn.setVisible(False)
+        self._lbl_auto_strategy.setVisible(False)
+
         mode = "all" if self._chk_mode.isChecked() else "sections"
         top_n = self._sld_topn.value()
 
@@ -1064,8 +1104,31 @@ class MainWindow(QMainWindow):
         self._search_worker.error.connect(self._on_search_error)
         self._search_worker.start()
 
-    def _on_search_done(self, matches):
+    def _on_search_done(self, matches, quality_warnings, effective_mode):
         self._btn_search.setEnabled(True)
+
+        # ── Quality warning banner ──────────────────────────────────────────
+        if quality_warnings:
+            warn_text = "⚠  " + "\n⚠  ".join(quality_warnings)
+            self._lbl_quality_warn.setText(warn_text)
+            self._lbl_quality_warn.setVisible(True)
+        else:
+            self._lbl_quality_warn.setVisible(False)
+
+        # ── Auto-strategy info label ────────────────────────────────────────
+        requested_strategy = self._cmb_strategy.currentText()
+        if requested_strategy == "Fused (Best)":
+            _mode_label = {
+                "full":             "Auto: Full Face (clean image — higher precision)",
+                "fused":            "Auto: Fused (occlusion/low quality detected)",
+                "upper_periocular": "Auto: Periocular Upper",
+            }
+            label_text = _mode_label.get(effective_mode, f"Auto: {effective_mode}")
+            self._lbl_auto_strategy.setText(f"🔍 {label_text}")
+            self._lbl_auto_strategy.setVisible(True)
+        else:
+            self._lbl_auto_strategy.setVisible(False)
+
         min_pct = self._sld_score.value()
         # Filter by minimum score
         filtered = [m for m in matches if m["similarity"] * 100 >= min_pct]
